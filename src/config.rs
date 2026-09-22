@@ -21,7 +21,11 @@ pub struct ApiConfig {
 
 impl Default for ApiConfig {
     fn default() -> Self {
-        Self { model: default_model(), max_tokens: default_max_tokens(), api_key: String::new() }
+        Self {
+            model: default_model(),
+            max_tokens: default_max_tokens(),
+            api_key: String::new(),
+        }
     }
 }
 
@@ -35,10 +39,14 @@ pub struct AudioConfig {
     pub chunk_seconds: u32,
     #[serde(default = "default_transcription_model")]
     pub transcription_model: String,
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(default = "default_vad_enabled")]
     pub vad_enabled: bool,
     #[serde(default = "default_silence_threshold")]
     pub silence_threshold: f32,
+    #[serde(default = "default_endpoint_silence_ms")]
+    pub endpoint_silence_ms: u64,
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
     #[serde(default = "default_filler_filter")]
@@ -54,8 +62,10 @@ impl Default for AudioConfig {
             source: String::new(),
             chunk_seconds: default_chunk_seconds(),
             transcription_model: default_transcription_model(),
+            language: default_language(),
             vad_enabled: default_vad_enabled(),
             silence_threshold: default_silence_threshold(),
+            endpoint_silence_ms: default_endpoint_silence_ms(),
             debounce_ms: default_debounce_ms(),
             filler_filter: default_filler_filter(),
             confidence_threshold: 0.0,
@@ -63,18 +73,42 @@ impl Default for AudioConfig {
     }
 }
 
-fn default_model() -> String { "openai/gpt-oss-20b".to_string() }
-fn default_max_tokens() -> u32 { 1024 }
-fn default_chunk_seconds() -> u32 { 3 }
-fn default_transcription_model() -> String { "whisper-large-v3-turbo".to_string() }
-fn default_vad_enabled() -> bool { true }
-fn default_silence_threshold() -> f32 { 0.02 }
-fn default_debounce_ms() -> u64 { 1500 }
-fn default_filler_filter() -> bool { true }
+fn default_model() -> String {
+    "openai/gpt-oss-20b".to_string()
+}
+fn default_max_tokens() -> u32 {
+    1024
+}
+fn default_chunk_seconds() -> u32 {
+    2
+}
+fn default_transcription_model() -> String {
+    "whisper-large-v3-turbo".to_string()
+}
+fn default_language() -> String {
+    "en".to_string()
+}
+fn default_vad_enabled() -> bool {
+    true
+}
+fn default_silence_threshold() -> f32 {
+    0.02
+}
+fn default_endpoint_silence_ms() -> u64 {
+    500
+}
+fn default_debounce_ms() -> u64 {
+    1500
+}
+fn default_filler_filter() -> bool {
+    true
+}
 
 impl Config {
     pub fn config_path() -> PathBuf {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from("." )).join("hyprly/config.toml")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("hyprly/config.toml")
     }
 
     pub fn load() -> anyhow::Result<Self> {
@@ -85,7 +119,10 @@ impl Config {
             Self::default()
         };
         if config.api.api_key.is_empty() {
-            config.api.api_key = env::var("GROQ_API_KEY").unwrap_or_default().trim().to_string();
+            config.api.api_key = env::var("GROQ_API_KEY")
+                .unwrap_or_default()
+                .trim()
+                .to_string();
         }
         Ok(config)
     }

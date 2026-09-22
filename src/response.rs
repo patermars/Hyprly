@@ -34,10 +34,15 @@ pub struct AiResponse {
 pub fn parse(raw: &str) -> Result<AiResponse> {
     let start = raw.find('{').unwrap_or(0);
     let end = raw.rfind('}').unwrap_or(raw.len().saturating_sub(1));
-    
-    if start <= end && end < raw.len() && raw[start..=end].contains('{') && raw[start..=end].contains('}') {
+
+    if start <= end
+        && end < raw.len()
+        && raw[start..=end].contains('{')
+        && raw[start..=end].contains('}')
+    {
         let json_str = &raw[start..=end];
-        let resp: AiResponse = serde_json::from_str(json_str).context("Failed to parse AI response")?;
+        let resp: AiResponse =
+            serde_json::from_str(json_str).context("Failed to parse AI response")?;
         Ok(resp)
     } else {
         bail!("No JSON object found in response");
@@ -73,7 +78,10 @@ pub fn retry_messages(malformed: &str) -> Vec<crate::api::types::ChatMessage> {
         },
         crate::api::types::ChatMessage {
             role: "user".to_string(),
-            content: format!("The previous response was malformed. Please fix the JSON:\n{}", malformed),
+            content: format!(
+                "The previous response was malformed. Please fix the JSON:\n{}",
+                malformed
+            ),
         },
     ]
 }

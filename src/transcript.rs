@@ -28,47 +28,47 @@ pub fn clean(raw: &str, config: &CleanConfig) -> String {
         let words: Vec<&str> = text.split_whitespace().collect();
         let mut new_words = Vec::new();
         let len = words.len();
-        
+
         for i in 0..len {
             let w_lower = words[i].to_lowercase();
             let w_clean = w_lower.trim_matches(|c: char| !c.is_alphabetic());
-            
+
             if fillers.contains(&w_clean) {
                 continue;
             }
 
             if w_clean == "like" {
                 if i > 0 && i < len - 1 {
-                    let prev = words[i-1].to_lowercase();
+                    let prev = words[i - 1].to_lowercase();
                     let prev_clean = prev.trim_matches(|c: char| !c.is_alphabetic());
-                    let next = words[i+1].to_lowercase();
+                    let next = words[i + 1].to_lowercase();
                     let next_clean = next.trim_matches(|c: char| !c.is_alphabetic());
-                    
+
                     let retain = matches!(
                         (prev_clean, next_clean),
-                        ("would", _) | ("looks", _) | ("feel", _) | (_, "a") | (_, "the") | (_, "that") | (_, "this")
+                        ("would", _)
+                            | ("looks", _)
+                            | ("feel", _)
+                            | (_, "a")
+                            | (_, "the")
+                            | (_, "that")
+                            | (_, "this")
                     );
-                    
+
                     if !retain {
                         continue;
                     }
                 } else if i > 0 {
-                    let prev = words[i-1].to_lowercase();
+                    let prev = words[i - 1].to_lowercase();
                     let prev_clean = prev.trim_matches(|c: char| !c.is_alphabetic());
-                    let retain = matches!(
-                        prev_clean,
-                        "would" | "looks" | "feel"
-                    );
+                    let retain = matches!(prev_clean, "would" | "looks" | "feel");
                     if !retain {
                         continue;
                     }
                 } else if i < len - 1 {
-                    let next = words[i+1].to_lowercase();
+                    let next = words[i + 1].to_lowercase();
                     let next_clean = next.trim_matches(|c: char| !c.is_alphabetic());
-                    let retain = matches!(
-                        next_clean,
-                        "a" | "the" | "that" | "this"
-                    );
+                    let retain = matches!(next_clean, "a" | "the" | "that" | "this");
                     if !retain {
                         continue;
                     }
@@ -101,7 +101,14 @@ pub fn clean(raw: &str, config: &CleanConfig) -> String {
     }
 
     if config.remove_false_starts {
-        let cues = ["no wait", "i mean", "sorry", "actually", "let me rephrase", "rather"];
+        let cues = [
+            "no wait",
+            "i mean",
+            "sorry",
+            "actually",
+            "let me rephrase",
+            "rather",
+        ];
         let segments: Vec<&str> = text.split(',').collect();
         let mut cleaned_segments = Vec::new();
 
@@ -132,7 +139,7 @@ pub fn clean(raw: &str, config: &CleanConfig) -> String {
     }
 
     text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    
+
     if let Some(c) = text.chars().next() {
         if c.is_lowercase() {
             let mut chars = text.chars();

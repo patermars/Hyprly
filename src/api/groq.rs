@@ -24,14 +24,17 @@ impl GroqClient {
         }
     }
 
-    pub async fn transcribe(&self, path: &str, model: &str) -> Result<String> {
+    pub async fn transcribe(&self, path: &str, model: &str, language: &str) -> Result<String> {
         let file = reqwest::multipart::Part::file(path)
             .await?
             .file_name("meeting.wav");
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .text("model", model.to_string())
             .text("response_format", "json")
             .part("file", file);
+        if !language.trim().is_empty() {
+            form = form.text("language", language.trim().to_string());
+        }
         let response = self
             .client
             .post("https://api.groq.com/openai/v1/audio/transcriptions")

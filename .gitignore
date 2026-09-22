@@ -7,7 +7,7 @@ apikey
 *.key
 *.pem
 *.secret
-project.md
+todo.md
 
 config.toml
 *.local.toml

@@ -11,7 +11,12 @@ use std::{
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tokio::{process::Command, sync::mpsc, time::{sleep, Duration, Instant}};
+use tokio::{
+    io::AsyncReadExt,
+    process::Command,
+    sync::mpsc,
+    time::{sleep, Duration, Instant},
+};
 use tokio_util::sync::CancellationToken;
 
 static CHUNK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -140,7 +145,11 @@ pub async fn run(audio: AudioConfig, api: ApiConfig, mobile: MobileHub) -> Resul
 
                 mobile.status("transcribing", "Transcribing");
                 let text = client
-                    .transcribe(wav.to_str().unwrap_or_default(), &audio.transcription_model)
+                    .transcribe(
+                        wav.to_str().unwrap_or_default(),
+                        &audio.transcription_model,
+                        &audio.language,
+                    )
                     .await;
                 let _ = tokio::fs::remove_file(&wav).await;
 
@@ -312,7 +321,6 @@ async fn record_chunk(config: &AudioConfig) -> Result<PathBuf> {
         std::process::id(),
         sequence
     ));
-    let sample_count = config.chunk_seconds.max(1) * 16_000;
     let mut command = Command::new("pw-record");
     command.args([
         "--format",
@@ -321,10 +329,8 @@ async fn record_chunk(config: &AudioConfig) -> Result<PathBuf> {
         "16000",
         "--channels",
         "1",
-        "--container",
-        "wav",
-        "--sample-count",
-        &sample_count.to_string(),
+        "--raw",
+        "-",
     ]);
     let source = if config.source.trim().is_empty() {
         default_output_source().await.unwrap_or_default()
@@ -334,27 +340,85 @@ async fn record_chunk(config: &AudioConfig) -> Result<PathBuf> {
     if !source.is_empty() {
         command.args(["--target", &source]);
     }
-    let output = command
-        .arg(&path)
-        .stdout(Stdio::null())
+    let mut child = command
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await?;
-    let valid_file = tokio::fs::metadata(&path)
-        .await
-        .map(|metadata| metadata.len() > 44)
-        .unwrap_or(false);
-    if !output.status.success() && !valid_file {
-        let _ = tokio::fs::remove_file(&path).await;
-        anyhow::bail!(
-            "pw-record failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("pw-record did not provide audio output"))?;
+
+    const FRAME_SAMPLES: usize = 1_600; // 100 ms at 16 kHz.
+    let frame_bytes = FRAME_SAMPLES * std::mem::size_of::<i16>();
+    let max_samples = config.chunk_seconds.max(1) as usize * 16_000;
+    let endpoint_silence_samples = (config.endpoint_silence_ms.max(100) as usize * 16_000) / 1_000;
+    let mut pcm = Vec::with_capacity(max_samples * std::mem::size_of::<i16>());
+    let mut frame = vec![0_u8; frame_bytes];
+    let mut speech_seen = false;
+    let mut silent_samples = 0;
+    let mut stop_requested = false;
+
+    while pcm.len() / std::mem::size_of::<i16>() < max_samples {
+        match stdout.read_exact(&mut frame).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                anyhow::bail!("failed reading audio from pw-record: {error}");
+            }
+        }
+
+        let samples = frame
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0);
+        let samples: Vec<f32> = samples.collect();
+        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+            / samples.len() as f32)
+            .sqrt();
+        pcm.extend_from_slice(&frame);
+
+        if rms >= config.silence_threshold {
+            speech_seen = true;
+            silent_samples = 0;
+        } else if speech_seen {
+            silent_samples += samples.len();
+            if silent_samples >= endpoint_silence_samples {
+                stop_requested = true;
+                break;
+            }
+        }
     }
-    if !valid_file {
-        let _ = tokio::fs::remove_file(&path).await;
-        anyhow::bail!("pw-record produced an empty or invalid WAV file");
+
+    if pcm.len() / std::mem::size_of::<i16>() >= max_samples {
+        stop_requested = true;
     }
+
+    let _ = child.kill().await;
+    let status = child.wait().await?;
+    if pcm.is_empty() {
+        let _ = tokio::fs::remove_file(&path).await;
+        anyhow::bail!("pw-record produced no audio: {status}");
+    }
+
+    if !status.success() && !stop_requested {
+        let _ = tokio::fs::remove_file(&path).await;
+        anyhow::bail!("pw-record stopped unexpectedly: {status}");
+    }
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&path, spec)?;
+    for bytes in pcm.chunks_exact(2) {
+        writer.write_sample(i16::from_le_bytes([bytes[0], bytes[1]]))?;
+    }
+    writer.finalize()?;
+
     Ok(path)
 }
 

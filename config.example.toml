@@ -9,5 +9,8 @@ max_tokens = 1024
 enabled = true
 # Empty means the current default PipeWire output (Meet/system audio).
 source = ""
-chunk_seconds = 8
+chunk_seconds = 2
 transcription_model = "whisper-large-v3-turbo"
+language = "en"
+# Stop a speech segment after this much trailing silence.
+endpoint_silence_ms = 500
