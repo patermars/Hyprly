@@ -24,6 +24,38 @@ impl GroqClient {
         }
     }
 
+    pub async fn transcribe(&self, path: &str, model: &str) -> Result<String> {
+        let file = reqwest::multipart::Part::file(path)
+            .await?
+            .file_name("meeting.wav");
+        let form = reqwest::multipart::Form::new()
+            .text("model", model.to_string())
+            .text("response_format", "json")
+            .part("file", file);
+        let response = self
+            .client
+            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            bail!(
+                "Transcription request failed with status {}: {}",
+                status,
+                body
+            );
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
+        Ok(parsed
+            .get("text")
+            .and_then(|text| text.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
     pub async fn stream_chat(
         &self,
         messages: Vec<ChatMessage>,

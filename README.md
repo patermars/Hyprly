@@ -1,76 +1,62 @@
-<div align="center">
-  <h1>Hyprly</h1>
-  <p><strong>A lightning-fast, context-aware AI overlay designed specifically for Hyprland & Wayland.</strong></p>
-</div>
+# Hyprly
 
----
+Hyprly is a headless AI meeting assistant for Linux. It captures meeting audio through PipeWire, transcribes it with Groq Whisper, generates concise assistance, and streams the transcript and answers to a paired mobile web app.
 
-Hyprly is a native Rust Wayland application that acts as an intelligent overlay. Powered by the **Groq API** and **GTK4 Layer Shell**, it shows a compact, centered horizontal panel to answer questions, read your clipboard, and see your active windows with near-zero latency.
-
-No X11 dependencies. No bloated Electron. Just raw Rust and native Wayland.
-
-## Features
-- **Wayland Native**: Built from the ground up for Hyprland using `gtk4-layer-shell`.
-- **Context-Aware**: Automatically reads your active window title and your clipboard data.
-- **Lightning Fast**: Uses Groq's high-speed inference for instant token streaming.
-- **Smart UI Layering**: Sits cleanly on top of your windows without stealing focus until you click.
-- **Markdown Support**: Renders code blocks, bold text, and formatting on-the-fly.
+The project has no graphical interface on the computer; all assistant output is delivered to the phone.
 
 ## Requirements
-Ensure you have the following Wayland/Arch utilities installed:
-- `grim` (Screen capture)
-- `slurp` (Region selection)
-- `tesseract` & `tesseract-data-eng` (OCR for reading the screen)
-- `wl-clipboard` (Clipboard access)
+
+- Rust and Cargo
+- PipeWire and WirePlumber
+- `pw-record` and `wpctl`
+- A Groq API key
+- A phone on the same local network
+
+## Run from the checkout
 
 ```bash
-sudo pacman -S grim slurp tesseract tesseract-data-eng wl-clipboard
+cd /home/patermars/Documents/Hyprly
+GROQ_API_KEY="your_groq_key" cargo run -- daemon
 ```
 
-## Installation & Setup
+The daemon prints a pairing code and serves the mobile app on port `8765`:
 
-1. **Clone the repository:**
-```bash
-git clone https://github.com/yourusername/Hyprly.git
-cd Hyprly
+```text
+http://YOUR_COMPUTER_LAN_IP:8765
 ```
 
-2. **Set your Groq API Key:**
-```bash
-export GROQ_API_KEY="gsk_your_api_key_here"
-```
-
-3. **Start the daemon (runs in the background):**
-```bash
-cargo run --release -- daemon
-```
-
-## Usage
-
-Hyprly operates using a lightweight background socket daemon. To trigger the UI instantly, simply run:
-```bash
-cargo run --release -- trigger
-```
-
-**Pro Tip:** Bind this to a shortcut in your `hyprland.conf` for the best experience!
-```ini
-# Start the daemon on login
-exec-once = GROQ_API_KEY="your_key" /path/to/hyprly daemon
-
-# Trigger the overlay with Super + Shift + Space
-bind = SUPER SHIFT, Space, exec, /path/to/hyprly trigger
-
-# Keep the Hyprly layer out of Google Meet and other Hyprland screen shares.
-# This requires a recent Hyprland release with layer rules.
-layerrule = no_screen_share, namespace:^(hyprly)$
-```
-
-Verify that Hyprland sees the layer namespace with `hyprctl layers | grep hyprly`. If it is not listed, restart Hyprly after rebuilding. If it is listed but still appears in Meet, check `hyprctl version`: `no_screen_share` requires a Hyprland version that supports layer screen-share exclusion. Google Meet must also be sharing a Wayland screen/window through the Hyprland/xdg-desktop-portal path; XWayland or browser-specific capture paths may not honor compositor layer rules.
+Open that address on your phone and enter the pairing code. Keep the daemon terminal running.
 
 ## Configuration
-Hyprly looks for a config file at `~/.config/hyprly/config.toml`. It supports customizing UI width, position, opacity, API settings, and more. The default position is `center` and the default width is `720px`; use `position = "center"` to force the Cluely-like layout. If your Hyprland version uses the newer Lua configuration, add an equivalent layer rule matching namespace `hyprly` with `no_screen_share = true`.
 
----
-<div align="center">
-  <sub>Built with Rust & GTK4 </sub>
-</div>
+Copy the example config:
+
+```bash
+mkdir -p ~/.config/hyprly
+cp config.example.toml ~/.config/hyprly/config.toml
+```
+
+Audio is enabled in the example config. An empty `audio.source` automatically selects the current default PipeWire output, which is appropriate for Meet/system audio. To select a specific node, inspect:
+
+```bash
+wpctl status -n
+```
+
+Then set, for example:
+
+```toml
+[audio]
+enabled = true
+source = "62"
+chunk_seconds = 8
+transcription_model = "whisper-large-v3-turbo"
+```
+
+## Project layout
+
+- `src/audio.rs` — PipeWire recording and transcription loop
+- `src/api/` — Groq transcription and chat clients
+- `src/mobile.rs` — local HTTP server, pairing, and WebSocket events
+- `mobile/` — phone interface
+
+The mobile app is served directly by the Rust daemon; no separate frontend build is required.

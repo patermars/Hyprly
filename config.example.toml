@@ -1,0 +1,13 @@
+[api]
+provider = "groq"
+api_key = "" # Prefer GROQ_API_KEY in the environment.
+model = "openai/gpt-oss-20b"
+stream = true
+max_tokens = 1024
+
+[audio]
+enabled = true
+# Empty means the current default PipeWire output (Meet/system audio).
+source = ""
+chunk_seconds = 8
+transcription_model = "whisper-large-v3-turbo"

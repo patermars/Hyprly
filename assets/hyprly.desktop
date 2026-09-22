@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Hyprly
-Comment=AI overlay for Hyprland
-Exec=hyprly daemon
-Type=Application
-Categories=Utility;
-NoDisplay=true

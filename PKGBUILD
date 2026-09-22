@@ -1,11 +1,11 @@
 pkgname=hyprly-git
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='AI overlay for Hyprland'
+pkgdesc='Headless AI meeting assistant with a mobile client'
 arch=('x86_64')
 url='https://github.com/patermars/hyprly'
 license=('MIT')
-depends=('gtk4' 'libadwaita' 'gtk4-layer-shell' 'grim' 'slurp' 'tesseract' 'tesseract-data-eng' 'wl-clipboard')
+depends=('pipewire' 'wireplumber')
 makedepends=('rust' 'cargo' 'git')
 source=("git+${url}.git")
 sha256sums=('SKIP')
@@ -33,5 +33,4 @@ package() {
     cd hyprly
     install -Dm755 target/release/hyprly "$pkgdir/usr/bin/hyprly"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-    install -Dm644 assets/hyprly.desktop "$pkgdir/usr/share/applications/hyprly.desktop"
 }
