@@ -1,56 +1,69 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#101114" />
-    <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css" />
-    <title>Hyprly</title>
-  </head>
-  <body>
-    <main class="shell">
-      <header class="topbar">
-        <div class="brand-mark">H</div>
-        <div>
-          <p class="eyebrow">HYPRLY</p>
-          <h1>Live assistant</h1>
-        </div>
-        <span class="status-pill" id="connection-status"><i></i> Not paired</span>
-      </header>
-
-      <section class="pair-card" id="pair-card">
-        <div class="section-heading">
-          <span class="step">01</span>
-          <div><p class="eyebrow">CONNECT</p><h2>Pair your computer</h2></div>
-        </div>
-        <p class="muted">Enter the pairing code shown by the Hyprly daemon.</p>
-        <form id="pair-form">
-          <input id="pair-code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000 000" aria-label="Pairing code" />
-          <button type="submit">Connect</button>
-        </form>
-      </section>
-
-      <section class="answer-card empty" id="answer-card">
-        <div class="section-heading">
-          <span class="step">02</span>
-          <div><p class="eyebrow">ASSIST</p><h2>Answers appear here</h2></div>
-        </div>
-        <div class="empty-state" id="empty-state">
-          <div class="pulse">✦</div>
-          <p>Hyprly will send concise talking points and answers to your phone while you stay focused in the meeting.</p>
-        </div>
-        <article id="answer-content" hidden>
-          <div class="answer-meta"><span id="answer-label">READY</span><time id="answer-time"></time></div>
-          <p id="answer-text"></p>
-        </article>
-      </section>
-
-      <section class="transcript-card">
-        <div class="section-heading compact"><p class="eyebrow">LIVE TRANSCRIPT</p><span class="listening" id="listening">Waiting</span></div>
-        <p class="transcript" id="transcript">Your meeting transcript will appear here.</p>
-      </section>
-    </main>
-    <script src="app.js"></script>
-  </body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#101114">
+<title>Hyprly</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="shell">
+<header class="topbar">
+<div class="brand-mark">H</div>
+<div class="title-section">
+<span class="eyebrow">HYPRLY</span>
+<h1>Live assistant</h1>
+</div>
+<div id="connection-status" class="status-pill">Disconnected</div>
+</header>
+<section id="pair-card" class="pair-card">
+<div class="section-heading">
+<span class="step">01</span>
+<span class="eyebrow">CONNECT</span>
+</div>
+<h2>Pair your computer</h2>
+<p class="muted">Enter the 6-digit code shown on your desktop.</p>
+<form id="pair-form">
+<input type="text" id="pair-code" maxlength="6" pattern="[0-9]{6}" required autocomplete="off">
+<button type="submit">Connect</button>
+</form>
+</section>
+<section id="answer-card" class="answer-card empty">
+<div class="section-heading">
+<span class="step">02</span>
+<span class="eyebrow">ASSIST</span>
+</div>
+<h2>Answers appear here</h2>
+<div id="empty-state" class="empty-state">
+<div class="pulse"></div>
+<p>Waiting for context...</p>
+</div>
+<article id="answer-content" hidden>
+<div class="answer-meta">
+<span id="answer-label">READY</span>
+<time id="answer-time"></time>
+</div>
+<div id="answer-type" class="answer-type-badge" hidden></div>
+<div id="answer-text"></div>
+<div id="answer-bullets" class="answer-bullets" hidden></div>
+<div id="answer-code" class="answer-code" hidden></div>
+</article>
+</section>
+<div id="control-bar" class="control-bar" hidden>
+<button id="btn-pause">⏸ Pause</button>
+<button id="btn-clear">✕ Clear</button>
+<div id="pipeline-status" class="pipeline-status ready">Ready</div>
+</div>
+<section class="transcript-card">
+<div class="section-heading">
+<span class="eyebrow">LIVE TRANSCRIPT</span>
+<span id="listening" class="listening">Waiting</span>
+</div>
+<p id="transcript" class="transcript">No audio detected yet...</p>
+</section>
+</main>
+<script src="app.js"></script>
+</body>
 </html>

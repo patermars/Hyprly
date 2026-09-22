@@ -13,6 +13,14 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResponseFormat {
+    #[serde(rename = "type")]
+    pub format_type: String,
 }
 
 #[derive(Debug, Deserialize)]

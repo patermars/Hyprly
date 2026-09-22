@@ -1,4 +1,4 @@
-use crate::api::types::{ChatMessage, ChatRequest, ChatResponse};
+use crate::api::types::{ChatMessage, ChatRequest, ChatResponse, ResponseFormat};
 use crate::config::ApiConfig;
 use anyhow::{bail, Result};
 use futures_util::StreamExt;
@@ -66,6 +66,9 @@ impl GroqClient {
             messages,
             stream: true,
             max_tokens: Some(self.max_tokens),
+            response_format: Some(ResponseFormat {
+                format_type: "json_object".to_string(),
+            }),
         };
 
         let response = self

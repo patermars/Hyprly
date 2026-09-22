@@ -35,18 +35,42 @@ pub struct AudioConfig {
     pub chunk_seconds: u32,
     #[serde(default = "default_transcription_model")]
     pub transcription_model: String,
+    #[serde(default = "default_vad_enabled")]
+    pub vad_enabled: bool,
+    #[serde(default = "default_silence_threshold")]
+    pub silence_threshold: f32,
+    #[serde(default = "default_debounce_ms")]
+    pub debounce_ms: u64,
+    #[serde(default = "default_filler_filter")]
+    pub filler_filter: bool,
+    #[serde(default)]
+    pub confidence_threshold: f32,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        Self { enabled: false, source: String::new(), chunk_seconds: default_chunk_seconds(), transcription_model: default_transcription_model() }
+        Self {
+            enabled: false,
+            source: String::new(),
+            chunk_seconds: default_chunk_seconds(),
+            transcription_model: default_transcription_model(),
+            vad_enabled: default_vad_enabled(),
+            silence_threshold: default_silence_threshold(),
+            debounce_ms: default_debounce_ms(),
+            filler_filter: default_filler_filter(),
+            confidence_threshold: 0.0,
+        }
     }
 }
 
 fn default_model() -> String { "openai/gpt-oss-20b".to_string() }
 fn default_max_tokens() -> u32 { 1024 }
-fn default_chunk_seconds() -> u32 { 8 }
+fn default_chunk_seconds() -> u32 { 3 }
 fn default_transcription_model() -> String { "whisper-large-v3-turbo".to_string() }
+fn default_vad_enabled() -> bool { true }
+fn default_silence_threshold() -> f32 { 0.02 }
+fn default_debounce_ms() -> u64 { 1500 }
+fn default_filler_filter() -> bool { true }
 
 impl Config {
     pub fn config_path() -> PathBuf {

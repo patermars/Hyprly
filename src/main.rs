@@ -2,6 +2,8 @@ mod api;
 mod audio;
 mod config;
 mod mobile;
+mod response;
+mod transcript;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

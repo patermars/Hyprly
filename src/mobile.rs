@@ -11,15 +11,29 @@ use axum::{
 use serde_json::json;
 use std::{
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::broadcast;
+
+use crate::response::AiResponse;
 
 #[derive(Clone)]
 pub struct MobileHub {
     code: Arc<String>,
     events: broadcast::Sender<String>,
+    pub paused: Arc<AtomicBool>,
+    commands: broadcast::Sender<MobileCommand>,
+}
+
+#[derive(Clone, Debug)]
+pub enum MobileCommand {
+    Pause,
+    Resume,
+    ClearTranscript,
 }
 
 impl MobileHub {
@@ -30,16 +44,23 @@ impl MobileHub {
             .as_nanos();
         let code = format!("{:06}", (seed % 1_000_000) as u32);
         let (events, _) = broadcast::channel(128);
+        let (commands, _) = broadcast::channel(32);
         println!("Hyprly mobile pairing code: {code}");
         println!("Open http://<this-machine-ip>:8765 on your phone");
         Self {
             code: Arc::new(code),
             events,
+            paused: Arc::new(AtomicBool::new(false)),
+            commands,
         }
     }
 
     pub fn publish(&self, event: serde_json::Value) {
         let _ = self.events.send(event.to_string());
+    }
+
+    pub fn status(&self, state: &str, message: &str) {
+        self.publish(json!({"type":"status","state":state,"message":message}));
     }
 
     pub fn answer_started(&self) {
@@ -54,8 +75,20 @@ impl MobileHub {
         self.publish(json!({"type":"answer", "text": text}));
     }
 
+    pub fn structured_answer(&self, text: &str, response: &AiResponse) {
+        self.publish(json!({
+            "type": "answer",
+            "text": text,
+            "structured": serde_json::to_value(response).unwrap_or_default()
+        }));
+    }
+
     pub fn transcript(&self, text: &str) {
         self.publish(json!({"type":"transcript", "text": text}));
+    }
+
+    pub fn subscribe_commands(&self) -> broadcast::Receiver<MobileCommand> {
+        self.commands.subscribe()
     }
 }
 
@@ -136,7 +169,30 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                     Err(_) => break,
                 }
             }
-            message = socket.recv() => if message.is_none() { break },
+            message = socket.recv() => {
+                match message {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
+                            match cmd.get("type").and_then(|v| v.as_str()) {
+                                Some("pause") => {
+                                    hub.paused.store(true, Ordering::Relaxed);
+                                    let _ = hub.commands.send(MobileCommand::Pause);
+                                }
+                                Some("resume") => {
+                                    hub.paused.store(false, Ordering::Relaxed);
+                                    let _ = hub.commands.send(MobileCommand::Resume);
+                                }
+                                Some("clear_transcript") => {
+                                    let _ = hub.commands.send(MobileCommand::ClearTranscript);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+            }
         }
     }
 }
