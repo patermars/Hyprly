@@ -13,6 +13,9 @@ pub fn setup_overlay_window(
     let window = adw::ApplicationWindow::new(app);
     
     window.init_layer_shell();
+    // A stable namespace lets Hyprland target this layer with a
+    // `no_screen_share` layer rule.
+    window.set_namespace("hyprly");
     window.set_layer(Layer::Overlay);
     window.set_keyboard_mode(KeyboardMode::None);
 
@@ -47,7 +50,14 @@ pub fn setup_overlay_window(
             window.set_anchor(Edge::Bottom, false);
             window.set_anchor(Edge::Left, false);
         }
-        _ => {}
+        _ => {
+            // Keep unknown values safe and compact instead of accidentally
+            // turning the overlay into an edge-anchored surface.
+            window.set_anchor(Edge::Top, false);
+            window.set_anchor(Edge::Right, false);
+            window.set_anchor(Edge::Bottom, false);
+            window.set_anchor(Edge::Left, false);
+        }
     }
 
     window.set_default_size(config.width, -1);

@@ -30,8 +30,11 @@ pub fn build_overlay_content(config: &UiConfig) -> OverlayComponents {
     header.append(&spinner);
 
     let scroll = gtk::ScrolledWindow::new();
-    scroll.set_vexpand(true);
-    scroll.set_min_content_height(200);
+    // Keep the overlay a compact horizontal panel rather than a full-height
+    // sidebar. The response can grow, but remains bounded on screen.
+    scroll.set_vexpand(false);
+    scroll.set_min_content_height(96);
+    scroll.set_max_content_height(360);
 
     let response_view = gtk::TextView::new();
     response_view.set_editable(false);

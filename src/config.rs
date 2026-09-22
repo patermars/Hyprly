@@ -139,11 +139,11 @@ fn default_max_tokens() -> u32 {
 }
 
 fn default_position() -> String {
-    "right".to_string()
+    "center".to_string()
 }
 
 fn default_width() -> i32 {
-    480
+    720
 }
 
 fn default_opacity() -> f64 {

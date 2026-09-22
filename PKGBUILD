@@ -12,7 +12,16 @@ sha256sums=('SKIP')
 
 pkgver() {
     cd hyprly
-    git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' || echo "0.1.0"
+    # `git describe` can return an empty result when the source snapshot has
+    # no usable tag. makepkg rejects an empty pkgver, so always provide a
+    # valid fallback.
+    local version
+    version=$(git describe --long --tags 2>/dev/null || true)
+    if [[ -n "$version" ]]; then
+        printf '%s\n' "$version" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+    else
+        printf '0.1.0.r%s\n' "$(git rev-list --count HEAD)"
+    fi
 }
 
 build() {
