@@ -1,6 +1,7 @@
 use crate::{
     api::{groq::GroqClient, types::ChatMessage},
     config::{ApiConfig, AudioConfig},
+    context::ContextStore,
     mobile::{MobileCommand, MobileHub},
     response, topic,
     transcript::{self, CleanConfig},
@@ -118,7 +119,12 @@ fn is_silent(path: &std::path::Path, threshold: f32) -> bool {
     }
 }
 
-pub async fn run(audio: AudioConfig, api: ApiConfig, mobile: MobileHub) -> Result<()> {
+pub async fn run(
+    audio: AudioConfig,
+    api: ApiConfig,
+    context: ContextStore,
+    mobile: MobileHub,
+) -> Result<()> {
     if !audio.enabled {
         eprintln!(
             "Audio capture disabled. Set [audio].enabled = true in ~/.config/hyprly/config.toml"
@@ -323,6 +329,7 @@ pub async fn run(audio: AudioConfig, api: ApiConfig, mobile: MobileHub) -> Resul
                 mobile.answer_started();
 
                 let transcript_snapshot = state.clean_transcript.clone();
+                let context_snapshot = context.prompt_section();
                 let mobile_ai = mobile.clone();
                 let api_clone = api.clone();
 
@@ -336,8 +343,9 @@ pub async fn run(audio: AudioConfig, api: ApiConfig, mobile: MobileHub) -> Resul
                         ChatMessage {
                             role: "user".to_string(),
                             content: format!(
-                                "Current topic context:\n{}\n\nAnswer the user's latest request using only this current topic. Do not carry context from an earlier topic. Give the most useful concise response now.",
-                                transcript_snapshot
+                                "{}\n\nCurrent topic context:\n{}\n\nAnswer the user's latest request using only this current topic. Do not carry context from an earlier topic. Give the most useful concise response now.",
+                                context_snapshot,
+                                transcript_snapshot,
                             ),
                         },
                     ];

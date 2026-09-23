@@ -1,6 +1,7 @@
 mod api;
 mod audio;
 mod config;
+mod context;
 mod mobile;
 mod response;
 mod topic;
@@ -32,9 +33,10 @@ fn main() -> Result<()> {
 
 fn run_daemon() -> Result<()> {
     let config = config::Config::load()?;
+    let context = context::ContextStore::load(&config.context, &config::Config::config_path())?;
     let mobile_hub = mobile::MobileHub::new();
     mobile::start(mobile_hub.clone());
     let runtime = Runtime::new()?;
-    runtime.block_on(audio::run(config.audio, config.api, mobile_hub))?;
+    runtime.block_on(audio::run(config.audio, config.api, context, mobile_hub))?;
     Ok(())
 }

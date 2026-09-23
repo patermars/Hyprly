@@ -205,6 +205,22 @@ endpoint_silence_ms   = 900      # finalize after this much trailing silence
 debounce_ms           = 300      # grace period after an utterance endpoint
 ```
 
+### Interview context
+
+Add private interview material under the `[context]` section. Hyprly loads plain-text or Markdown files locally at startup and includes them as reference material in AI prompts; they are not added to the live transcript or topic history.
+
+```toml
+[context]
+files = [
+  "~/Documents/interview/resume.md",
+  "~/Documents/interview/job-description.md",
+  "~/Documents/interview/company-notes.txt",
+]
+max_chars = 24000
+```
+
+Restart the daemon after changing the context files or configuration. Context files are sent to the configured AI provider, so avoid adding secrets that should not leave the machine.
+
 **Capture a specific audio device** (e.g. a virtual meeting cable, browser tab, or headset mic):
 
 ```bash

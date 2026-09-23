@@ -7,6 +7,29 @@ pub struct Config {
     pub api: ApiConfig,
     #[serde(default)]
     pub audio: AudioConfig,
+    #[serde(default)]
+    pub context: ContextConfig,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ContextConfig {
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default = "default_context_max_chars")]
+    pub max_chars: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            max_chars: default_context_max_chars(),
+        }
+    }
+}
+
+fn default_context_max_chars() -> usize {
+    24_000
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -152,6 +175,7 @@ impl Config {
             config.audio.max_concurrent_transcriptions.clamp(1, 4);
         config.audio.endpoint_silence_ms = config.audio.endpoint_silence_ms.clamp(800, 1_500);
         config.audio.debounce_ms = config.audio.debounce_ms.clamp(150, 700);
+        config.context.max_chars = config.context.max_chars.clamp(1_000, 100_000);
         Ok(config)
     }
 }

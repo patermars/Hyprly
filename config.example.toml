@@ -5,6 +5,15 @@ model = "openai/gpt-oss-20b"
 stream = true
 max_tokens = 1024
 
+[context]
+# Add interview-specific reference documents. Paths may be absolute or relative
+# to this config file. These files are loaded locally and sent as AI context.
+files = [
+  "~/Documents/interview/resume.md",
+  "~/Documents/interview/job-description.md",
+]
+max_chars = 24000
+
 [audio]
 enabled = true
 # Empty means the current default PipeWire output (Meet/system audio).
