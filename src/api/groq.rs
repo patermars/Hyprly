@@ -14,6 +14,12 @@ pub struct GroqClient {
     max_tokens: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct TranscriptionResult {
+    pub text: String,
+    pub confidence: Option<f32>,
+}
+
 impl GroqClient {
     pub fn new(config: &ApiConfig) -> Self {
         Self {
@@ -24,13 +30,18 @@ impl GroqClient {
         }
     }
 
-    pub async fn transcribe(&self, path: &str, model: &str, language: &str) -> Result<String> {
+    pub async fn transcribe(
+        &self,
+        path: &str,
+        model: &str,
+        language: &str,
+    ) -> Result<TranscriptionResult> {
         let file = reqwest::multipart::Part::file(path)
             .await?
             .file_name("meeting.wav");
         let mut form = reqwest::multipart::Form::new()
             .text("model", model.to_string())
-            .text("response_format", "json")
+            .text("response_format", "verbose_json")
             .part("file", file);
         if !language.trim().is_empty() {
             form = form.text("language", language.trim().to_string());
@@ -52,11 +63,35 @@ impl GroqClient {
             );
         }
         let parsed: serde_json::Value = serde_json::from_str(&body)?;
-        Ok(parsed
+        let text = parsed
             .get("text")
             .and_then(|text| text.as_str())
             .unwrap_or_default()
-            .to_string())
+            .to_string();
+
+        // Groq exposes segment avg_logprob for verbose transcription
+        // responses. Convert the mean log probability to a bounded, usable
+        // confidence score while remaining compatible with responses that do
+        // not include segment metadata.
+        let confidence = parsed
+            .get("confidence")
+            .and_then(|value| value.as_f64())
+            .map(|value| value as f32)
+            .or_else(|| {
+                let segments = parsed.get("segments")?.as_array()?;
+                let scores: Vec<f64> = segments
+                    .iter()
+                    .filter_map(|segment| segment.get("avg_logprob")?.as_f64())
+                    .collect();
+                if scores.is_empty() {
+                    None
+                } else {
+                    let average = scores.iter().sum::<f64>() / scores.len() as f64;
+                    Some(average.exp().clamp(0.0, 1.0) as f32)
+                }
+            });
+
+        Ok(TranscriptionResult { text, confidence })
     }
 
     pub async fn stream_chat(

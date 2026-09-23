@@ -51,8 +51,8 @@ Someone asks a hard follow-up → phone shows a suggested reply
 ┌───────────────────────────────────────────────────────────────────┐
 │                           Your Computer                           │
 │                                                                   │
-│   PipeWire ──► VAD ──► 2s chunks ──► Groq Whisper (transcribe)   │
 │                                              │                    │
+│   PipeWire ──► VAD ──► 2s chunks ──► Groq Whisper (transcribe)   │
 │                                     Transcript cleanup            │
 │                                     (fillers, repeats, restarts)  │
 │                                              │                    │
@@ -197,9 +197,12 @@ max_tokens  = 1024
 enabled               = true
 source                = ""       # empty = default PipeWire output sink
 chunk_seconds         = 2
+min_utterance_seconds = 2
+max_utterance_seconds = 10
 transcription_model   = "whisper-large-v3-turbo"
 language              = "en"
-endpoint_silence_ms   = 500      # cut chunk early after this much trailing silence
+endpoint_silence_ms   = 900      # finalize after this much trailing silence
+debounce_ms           = 300      # grace period after an utterance endpoint
 ```
 
 **Capture a specific audio device** (e.g. a virtual meeting cable, browser tab, or headset mic):

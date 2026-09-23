@@ -3,6 +3,7 @@ mod audio;
 mod config;
 mod mobile;
 mod response;
+mod topic;
 mod transcript;
 
 use anyhow::Result;

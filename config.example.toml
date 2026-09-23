@@ -9,8 +9,16 @@ max_tokens = 1024
 enabled = true
 # Empty means the current default PipeWire output (Meet/system audio).
 source = ""
-chunk_seconds = 2
+chunk_seconds = 4
+# Minimum speech duration before endpoint silence can close an utterance.
+min_utterance_seconds = 2
+# Hard safety limit for one complete spoken request.
+max_utterance_seconds = 10
 transcription_model = "whisper-large-v3-turbo"
+# Keep two requests in flight so transcription overlaps recording.
+max_concurrent_transcriptions = 2
 language = "en"
+# Skip transcription results below this confidence (0 disables filtering).
+confidence_threshold = 0.0
 # Stop a speech segment after this much trailing silence.
 endpoint_silence_ms = 500

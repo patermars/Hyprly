@@ -13,7 +13,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -27,6 +27,7 @@ pub struct MobileHub {
     events: broadcast::Sender<String>,
     pub paused: Arc<AtomicBool>,
     commands: broadcast::Sender<MobileCommand>,
+    last_answer: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +53,7 @@ impl MobileHub {
             events,
             paused: Arc::new(AtomicBool::new(false)),
             commands,
+            last_answer: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -75,6 +77,26 @@ impl MobileHub {
         self.publish(json!({"type":"answer", "text": text}));
     }
 
+    pub fn set_last_answer(&self, text: &str) {
+        if let Ok(mut answer) = self.last_answer.lock() {
+            *answer = Some(text.to_string());
+        }
+    }
+
+    pub fn restore_last_answer(&self) -> bool {
+        let answer = self
+            .last_answer
+            .lock()
+            .ok()
+            .and_then(|answer| answer.clone());
+        if let Some(answer) = answer {
+            self.answer_done(&answer);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn structured_answer(&self, text: &str, response: &AiResponse) {
         self.publish(json!({
             "type": "answer",
@@ -85,6 +107,10 @@ impl MobileHub {
 
     pub fn transcript(&self, text: &str) {
         self.publish(json!({"type":"transcript", "text": text}));
+    }
+
+    pub fn topic_changed(&self) {
+        self.publish(json!({"type":"topic_reset"}));
     }
 
     pub fn subscribe_commands(&self) -> broadcast::Receiver<MobileCommand> {

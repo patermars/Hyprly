@@ -83,12 +83,9 @@ function handleEvent(event) {
       DOM.answerCard.classList.remove('empty');
       DOM.emptyState.hidden = true;
       DOM.answerContent.hidden = false;
-      DOM.answerText.innerHTML = '';
-      DOM.answerBullets.hidden = true;
-      DOM.answerCode.hidden = true;
-      DOM.answerType.hidden = true;
       streamingAnswer = '';
       lastRenderedStreamedCode = '';
+      DOM.answerLabel.textContent = DOM.answerText.textContent.trim() ? 'UPDATING' : 'THINKING';
       DOM.answerTime.textContent = new Date().toLocaleTimeString();
       break;
     case 'answer_token':
@@ -109,6 +106,7 @@ function handleEvent(event) {
       break;
     case 'answer':
       DOM.answerText.innerHTML = renderMarkdown(event.text);
+      DOM.answerLabel.textContent = 'READY';
       if (event.structured) {
         if (event.structured.type) {
           DOM.answerType.textContent = event.structured.type.replace(/_/g, ' ');
@@ -126,6 +124,18 @@ function handleEvent(event) {
       break;
     case 'transcript':
       DOM.transcript.textContent = event.text;
+      break;
+    case 'topic_reset':
+      DOM.answerText.innerHTML = '';
+      DOM.answerBullets.innerHTML = '';
+      DOM.answerBullets.hidden = true;
+      DOM.answerCode.innerHTML = '';
+      DOM.answerCode.hidden = true;
+      DOM.answerType.textContent = '';
+      DOM.answerType.hidden = true;
+      DOM.answerCard.classList.add('empty');
+      DOM.emptyState.hidden = false;
+      DOM.answerContent.hidden = true;
       break;
     case 'error':
       DOM.connectionStatus.textContent = 'Error';
