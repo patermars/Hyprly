@@ -16,6 +16,8 @@
 <span class="eyebrow">HYPRLY</span>
 <h1>Live assistant</h1>
 </div>
+<button id="context-toggle" class="context-toggle" type="button" aria-controls="context-card" aria-expanded="false" hidden><span class="context-icon">☷</span><span class="context-toggle-label">Context</span></button>
+<label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select" aria-label="Color theme"><option value="midnight">Midnight</option><option value="paper">Paper</option><option value="aurora">Aurora</option></select></label>
 <div id="connection-status" class="status-pill">Disconnected</div>
 </header>
 <section id="pair-card" class="pair-card">
@@ -30,9 +32,40 @@
 <button type="submit">Connect</button>
 </form>
 </section>
-<section id="answer-card" class="answer-card empty">
+<section id="context-card" class="context-card" hidden>
 <div class="section-heading">
 <span class="step">02</span>
+<span class="eyebrow">INTERVIEW CONTEXT</span>
+<button id="context-close" class="context-close" type="button" aria-label="Close context menu">×</button>
+</div>
+<h2>Personalize your answers</h2>
+<p class="muted">Add your resume, the job description, and company notes. Saved on this device and sent to Hyprly when you save.</p>
+<label for="context-resume">Resume</label>
+<div class="file-dropzone" data-file-input="resume-file" tabindex="0" role="button" aria-label="Drop resume PDF or DOCX here, or choose files">
+<span>Drop PDF or DOCX here, or choose files</span>
+<input class="context-file" id="resume-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
+</div>
+<span id="resume-file-status" class="file-status" aria-live="polite"></span>
+<textarea id="context-resume" rows="5" placeholder="Paste your resume or key experience"></textarea>
+<label for="context-job">Job description</label>
+<div class="file-dropzone" data-file-input="job-file" tabindex="0" role="button" aria-label="Drop job description PDF or DOCX here, or choose files">
+<span>Drop PDF or DOCX here, or choose files</span>
+<input class="context-file" id="job-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
+</div>
+<span id="job-file-status" class="file-status" aria-live="polite"></span>
+<textarea id="context-job" rows="5" placeholder="Paste the role requirements"></textarea>
+<label for="context-company">Company</label>
+<div class="file-dropzone" data-file-input="company-file" tabindex="0" role="button" aria-label="Drop company notes PDF or DOCX here, or choose files">
+<span>Drop PDF or DOCX here, or choose files</span>
+<input class="context-file" id="company-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
+</div>
+<span id="company-file-status" class="file-status" aria-live="polite"></span>
+<textarea id="context-company" rows="3" placeholder="Company, team, products, or notes"></textarea>
+<div class="context-actions"><button id="btn-save-context" type="button">Save context</button><span id="context-save-status" class="muted" aria-live="polite"></span></div>
+</section>
+<section id="answer-card" class="answer-card empty">
+<div class="section-heading">
+<span class="step">03</span>
 <span class="eyebrow">ASSIST</span>
 </div>
 <h2>Answers appear here</h2>

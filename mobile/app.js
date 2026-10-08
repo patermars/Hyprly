@@ -1,8 +1,20 @@
 const DOM = {
   connectionStatus: document.getElementById('connection-status'),
+  themeSelect: document.getElementById('theme-select'),
   pairCard: document.getElementById('pair-card'),
   pairForm: document.getElementById('pair-form'),
   pairCode: document.getElementById('pair-code'),
+  contextCard: document.getElementById('context-card'),
+  contextToggle: document.getElementById('context-toggle'),
+  contextClose: document.getElementById('context-close'),
+  contextResume: document.getElementById('context-resume'),
+  contextJob: document.getElementById('context-job'),
+  contextCompany: document.getElementById('context-company'),
+  saveContext: document.getElementById('btn-save-context'),
+  contextSaveStatus: document.getElementById('context-save-status'),
+  resumeFile: document.getElementById('resume-file'),
+  jobFile: document.getElementById('job-file'),
+  companyFile: document.getElementById('company-file'),
   answerCard: document.getElementById('answer-card'),
   emptyState: document.getElementById('empty-state'),
   answerContent: document.getElementById('answer-content'),
@@ -27,6 +39,15 @@ let pairedCode = '';
 let paused = false;
 let streamingAnswer = '';
 let lastRenderedStreamedCode = '';
+const availableThemes = ['midnight', 'paper', 'aurora'];
+function applyTheme(theme) {
+  const selected = availableThemes.includes(theme) ? theme : 'midnight';
+  document.documentElement.dataset.theme = selected;
+  DOM.themeSelect.value = selected;
+  localStorage.setItem('hyprly-theme', selected);
+}
+applyTheme(localStorage.getItem('hyprly-theme') || 'midnight');
+DOM.themeSelect.onchange = () => applyTheme(DOM.themeSelect.value);
 function connect(code) {
   cancelReconnect();
   socket = new WebSocket(`ws://${location.host}/ws`);
@@ -74,6 +95,9 @@ function handleEvent(event) {
       reconnectAttempts = 0;
       DOM.listening.textContent = 'Listening...';
       DOM.pairCard.hidden = true;
+      DOM.contextCard.hidden = false;
+      DOM.contextToggle.hidden = false;
+      sendContext();
       break;
     case 'status':
       DOM.pipelineStatus.textContent = event.message || event.state;
@@ -285,6 +309,105 @@ DOM.pairForm.onsubmit = (e) => {
   const val = DOM.pairCode.value.trim();
   if (val.length === 6) connect(val);
 };
+try {
+  const savedContext = JSON.parse(localStorage.getItem('hyprly-interview-context') || '{}');
+  DOM.contextResume.value = savedContext.resume || '';
+  DOM.contextJob.value = savedContext.job_description || '';
+  DOM.contextCompany.value = savedContext.company || '';
+} catch (_) {}
+function sendContext() {
+  const context = {
+    resume: DOM.contextResume.value,
+    job_description: DOM.contextJob.value,
+    company: DOM.contextCompany.value
+  };
+  localStorage.setItem('hyprly-interview-context', JSON.stringify(context));
+  if (socket && socket.readyState === WebSocket.OPEN && paired) {
+    socket.send(JSON.stringify({ type: 'update_context', ...context }));
+    DOM.contextSaveStatus.textContent = 'Saved for this session';
+  } else {
+    DOM.contextSaveStatus.textContent = 'Saved on this device; connect to apply';
+  }
+}
+DOM.saveContext.onclick = sendContext;
+function setContextMenu(open) {
+  DOM.contextCard.classList.toggle('menu-open', open);
+  DOM.contextToggle.setAttribute('aria-expanded', String(open));
+}
+DOM.contextToggle.onclick = () => setContextMenu(!DOM.contextCard.classList.contains('menu-open'));
+DOM.contextClose.onclick = () => setContextMenu(false);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setContextMenu(false);
+});
+async function extractFiles(fileList, target, status) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  for (const file of files) {
+    const name = file.name.toLowerCase();
+    const format = name.endsWith('.pdf') ? 'pdf' : name.endsWith('.docx') ? 'docx' : '';
+    if (!format) {
+      status.textContent = `${file.name}: choose a PDF or DOCX file.`;
+      continue;
+    }
+    status.textContent = `Reading ${file.name}…`;
+    try {
+      const response = await fetch(`/extract?format=${format}&code=${encodeURIComponent(pairedCode)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not read this document');
+      let text = result.text || '';
+      if (format === 'docx') {
+        const xml = new DOMParser().parseFromString(text, 'application/xml');
+        if (xml.querySelector('parsererror')) throw new Error('The DOCX document is invalid.');
+        text = Array.from(xml.getElementsByTagName('w:p')).map(paragraph =>
+          Array.from(paragraph.getElementsByTagName('w:t')).map(node => node.textContent).join('')
+        ).filter(line => line.trim()).join('\n');
+      }
+      if (!text.trim()) throw new Error('No readable text found in this document.');
+      target.value = [target.value.trim(), `--- ${file.name} ---`, text.trim()].filter(Boolean).join('\n\n');
+      status.textContent = `${file.name} added`;
+    } catch (error) {
+      status.textContent = `${file.name}: ${error.message}`;
+    }
+  }
+}
+const fileTargets = {
+  'resume-file': [DOM.contextResume, document.getElementById('resume-file-status')],
+  'job-file': [DOM.contextJob, document.getElementById('job-file-status')],
+  'company-file': [DOM.contextCompany, document.getElementById('company-file-status')]
+};
+for (const zone of document.querySelectorAll('.file-dropzone')) {
+  const input = document.getElementById(zone.dataset.fileInput);
+  const [target, status] = fileTargets[input.id];
+  input.onchange = () => {
+    extractFiles(input.files, target, status);
+    input.value = '';
+  };
+  zone.addEventListener('click', (event) => {
+    if (event.target !== input) input.click();
+  });
+  zone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  zone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    zone.classList.add('drag-active');
+  });
+  zone.addEventListener('dragleave', (event) => {
+    if (!zone.contains(event.relatedTarget)) zone.classList.remove('drag-active');
+  });
+  zone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    zone.classList.remove('drag-active');
+    extractFiles(event.dataTransfer.files, target, status);
+  });
+}
 DOM.btnPause.onclick = () => {
   paused = !paused;
   DOM.btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';

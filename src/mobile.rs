@@ -1,23 +1,26 @@
 use axum::{
+    body::Bytes,
     extract::{
+        DefaultBodyLimit,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
     http::header,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde_json::json;
 use std::{
     net::SocketAddr,
+    sync::atomic::AtomicU64,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::broadcast;
+use tokio::{io::AsyncWriteExt, process::Command, sync::broadcast};
 
 use crate::response::AiResponse;
 
@@ -35,6 +38,7 @@ pub enum MobileCommand {
     Pause,
     Resume,
     ClearTranscript,
+    UpdateContext(String),
 }
 
 impl MobileHub {
@@ -153,6 +157,98 @@ async fn manifest() -> Response {
         .into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct ExtractQuery {
+    format: String,
+    code: String,
+}
+
+static UPLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+async fn extract_document(
+    Query(query): Query<ExtractQuery>,
+    State(hub): State<MobileHub>,
+    body: Bytes,
+) -> Response {
+    if query.code != hub.code.as_str() {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error":"Pair with Hyprly before uploading documents."})),
+        )
+            .into_response();
+    }
+    let extracted = match query.format.as_str() {
+        "pdf" => {
+            if !body.starts_with(b"%PDF-") {
+                Err("This file does not look like a PDF.".to_string())
+            } else {
+                let mut child = match Command::new("pdftotext")
+                    .args(["-layout", "-", "-"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(_) => return (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"error":"PDF support requires the pdftotext utility (Poppler)."}))).into_response(),
+                };
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(&body).await.is_err() {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            axum::Json(json!({"error":"Could not read the uploaded PDF."})),
+                        )
+                            .into_response();
+                    }
+                }
+                match child.wait_with_output().await {
+                    Ok(output) if output.status.success() => {
+                        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+                    }
+                    _ => Err("Could not extract text from this PDF.".to_string()),
+                }
+            }
+        }
+        "docx" => {
+            if !body.starts_with(b"PK\x03\x04") {
+                Err("This file does not look like a DOCX document.".to_string())
+            } else {
+                let id = UPLOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir()
+                    .join(format!("hyprly-upload-{}-{id}.docx", std::process::id()));
+                let result = async {
+                    tokio::fs::write(&path, &body).await.map_err(|_| {
+                        "Could not store the uploaded document temporarily.".to_string()
+                    })?;
+                    let output = Command::new("unzip")
+                        .args(["-p", path.to_str().unwrap_or_default(), "word/document.xml"])
+                        .output()
+                        .await
+                        .map_err(|_| "DOCX support requires the unzip utility.".to_string())?;
+                    if !output.status.success() {
+                        return Err("Could not extract text from this DOCX document.".to_string());
+                    }
+                    String::from_utf8(output.stdout)
+                        .map_err(|_| "The DOCX document contains invalid text.".to_string())
+                }
+                .await;
+                let _ = tokio::fs::remove_file(path).await;
+                result
+            }
+        }
+        _ => Err("Choose a PDF or DOCX document.".to_string()),
+    };
+
+    match extracted {
+        Ok(text) => axum::Json(json!({"text": text})).into_response(),
+        Err(error) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error":error})),
+        )
+            .into_response(),
+    }
+}
+
 async fn websocket(ws: WebSocketUpgrade, State(hub): State<MobileHub>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, hub))
 }
@@ -211,6 +307,21 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                                 Some("clear_transcript") => {
                                     let _ = hub.commands.send(MobileCommand::ClearTranscript);
                                 }
+                                Some("update_context") => {
+                                    let resume = cmd.get("resume").and_then(|v| v.as_str()).unwrap_or("");
+                                    let job = cmd.get("job_description").and_then(|v| v.as_str()).unwrap_or("");
+                                    let company = cmd.get("company").and_then(|v| v.as_str()).unwrap_or("");
+                                    let context = [
+                                        ("Resume", resume),
+                                        ("Job description", job),
+                                        ("Company", company),
+                                    ].into_iter()
+                                     .filter(|(_, value)| !value.trim().is_empty())
+                                     .map(|(label, value)| format!("### {label}\n{}", value.trim()))
+                                     .collect::<Vec<_>>()
+                                     .join("\n\n");
+                                    let _ = hub.commands.send(MobileCommand::UpdateContext(context));
+                                }
                                 _ => {}
                             }
                         }
@@ -232,7 +343,9 @@ pub fn start(hub: MobileHub) {
                 .route("/styles.css", get(styles))
                 .route("/app.js", get(script))
                 .route("/manifest.webmanifest", get(manifest))
+                .route("/extract", post(extract_document))
                 .route("/ws", get(websocket))
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
                 .with_state(hub);
             let listener = tokio::net::TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], 8765)))
                 .await

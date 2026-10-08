@@ -207,19 +207,9 @@ debounce_ms           = 300      # grace period after an utterance endpoint
 
 ### Interview context
 
-Add private interview material under the `[context]` section. Hyprly loads plain-text or Markdown files locally at startup and includes them as reference material in AI prompts; they are not added to the live transcript or topic history.
+You can paste your resume, job description, and company notes into the **Interview context** section of the phone webpage after pairing, or attach PDF and DOCX files to have their text extracted into those fields. Press **Save context** to use them for new answers. The page keeps these fields in that browser's local storage for the next visit. They are not added to the live transcript or topic history. PDF uploads require `pdftotext` from Poppler; DOCX uploads require `unzip`. Uploaded files are removed after extraction.
 
-```toml
-[context]
-files = [
-  "~/Documents/interview/resume.md",
-  "~/Documents/interview/job-description.md",
-  "~/Documents/interview/company-notes.txt",
-]
-max_chars = 24000
-```
-
-Restart the daemon after changing the context files or configuration. Context files are sent to the configured AI provider, so avoid adding secrets that should not leave the machine.
+The context is sent to the configured AI provider when generating answers, so avoid entering secrets that should not leave the machine.
 
 **Capture a specific audio device** (e.g. a virtual meeting cable, browser tab, or headset mic):
 
@@ -308,6 +298,8 @@ See [`todo.md`](todo.md) for the full phase-by-phase breakdown.
 | PipeWire + WirePlumber | For audio capture |
 | `pw-record` | Ships with PipeWire |
 | `wpctl` | Ships with WirePlumber |
+| `pdftotext` | Poppler utility; needed to extract PDF uploads |
+| `unzip` | Needed to extract DOCX uploads |
 | Rust + Cargo | Install from [rustup.rs](https://rustup.rs/) |
 | [Groq API key](https://console.groq.com/keys) | Free tier is enough |
 | Phone on the same Wi-Fi | Any browser, no app install |

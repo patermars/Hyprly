@@ -122,7 +122,7 @@ fn is_silent(path: &std::path::Path, threshold: f32) -> bool {
 pub async fn run(
     audio: AudioConfig,
     api: ApiConfig,
-    context: ContextStore,
+    mut context: ContextStore,
     mobile: MobileHub,
 ) -> Result<()> {
     if !audio.enabled {
@@ -295,6 +295,10 @@ pub async fn run(
                         state.raw_transcript.clear();
                         state.clean_transcript.clear();
                         mobile.transcript("");
+                    }
+                    Ok(MobileCommand::UpdateContext(value)) => {
+                        context.set_web_context(value);
+                        mobile.status("ready", "Interview context saved");
                     }
                     Ok(MobileCommand::Pause) => {
                         mobile.status("ready", "Paused");
