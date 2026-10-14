@@ -28,10 +28,20 @@
 <h2>Pair your computer</h2>
 <p class="muted">Enter the 6-digit code shown on your desktop.</p>
 <form id="pair-form">
+<div class="pair-code-entry">
 <input type="text" id="pair-code" maxlength="6" pattern="[0-9]{6}" required autocomplete="off">
+<button id="btn-scan-qr" class="scan-button" type="button" aria-label="Scan pairing QR code" title="Scan QR code">▣</button>
+</div>
 <button type="submit">Connect</button>
 </form>
 </section>
+<div id="qr-scanner" class="qr-scanner" hidden>
+<div class="qr-scan-panel" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title">
+<div class="qr-scan-header"><h2 id="qr-scan-title">Scan pairing QR</h2><button id="btn-close-scanner" class="context-close" type="button" aria-label="Close scanner">×</button></div>
+<video id="qr-camera" playsinline muted></video>
+<p id="qr-scan-status" class="muted" role="status">Point your camera at the QR code on your computer.</p>
+</div>
+</div>
 <section id="context-card" class="context-card" hidden>
 <div class="section-heading">
 <span class="step">02</span>

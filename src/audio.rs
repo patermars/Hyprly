@@ -149,12 +149,23 @@ pub async fn run(
 
     let audio_clone = audio.clone();
     let mobile_clone = mobile.clone();
+    let mut connection = mobile.subscribe_connection();
     let paused = mobile.paused.clone();
     let recorder_shutdown = shutdown.clone();
     let recorder = tokio::spawn(async move {
         loop {
             if recorder_shutdown.is_cancelled() {
                 break;
+            }
+            if !*connection.borrow() {
+                mobile_clone.status("ready", "Waiting for phone pairing");
+                tokio::select! {
+                    changed = connection.changed() => {
+                        if changed.is_err() { break; }
+                    }
+                    _ = recorder_shutdown.cancelled() => break,
+                }
+                continue;
             }
             if paused.load(Ordering::Relaxed) {
                 tokio::select! {
@@ -165,7 +176,7 @@ pub async fn run(
             }
             mobile_clone.status("recording", "Recording");
             let recorded_at = StdInstant::now();
-            match record_chunk(&audio_clone, recorder_shutdown.clone()).await {
+            match record_chunk(&audio_clone, recorder_shutdown.clone(), connection.clone()).await {
                 Ok(Some(wav)) => {
                     let chunk = RecordedChunk {
                         sequence: CHUNK_SEQUENCE.load(Ordering::Relaxed).saturating_sub(1),
@@ -177,7 +188,8 @@ pub async fn run(
                         break;
                     }
                 }
-                Ok(None) => break,
+                Ok(None) if recorder_shutdown.is_cancelled() => break,
+                Ok(None) => continue,
                 Err(e) => {
                     eprintln!("Recording error: {e:#}");
                     mobile_clone.status("error", "Recording failed");
@@ -202,12 +214,15 @@ pub async fn run(
                 let audio_for_task = audio.clone();
                 let api_for_task = api.clone();
                 let mobile_for_task = mobile.clone();
+                let connection_for_task = mobile.subscribe_connection();
                 let transcription_limit_for_task = transcription_limit.clone();
                 transcription_tasks.spawn(async move {
                     let permit = transcription_limit_for_task.acquire_owned().await;
                     let _permit = permit;
                     let started = StdInstant::now();
-                    let result = if audio_for_task.vad_enabled
+                    let result = if !*connection_for_task.borrow() {
+                        Ok(None)
+                    } else if audio_for_task.vad_enabled
                         && is_silent(&chunk.path, audio_for_task.silence_threshold)
                     {
                         Ok(None)
@@ -465,6 +480,7 @@ pub async fn run(
 async fn record_chunk(
     config: &AudioConfig,
     shutdown: CancellationToken,
+    mut connection: tokio::sync::watch::Receiver<bool>,
 ) -> Result<Option<PathBuf>> {
     let sequence = CHUNK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
@@ -522,6 +538,13 @@ async fn record_chunk(
             _ = shutdown.cancelled() => {
                 cancelled = true;
                 break;
+            }
+            changed = connection.changed() => {
+                if changed.is_err() || !*connection.borrow() {
+                    cancelled = true;
+                    break;
+                }
+                continue;
             }
             result = stdout.read_exact(&mut frame) => result,
         } {

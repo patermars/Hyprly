@@ -37,49 +37,11 @@ No screen overlays. No desktop clutter. Your display stays completely clean. You
 
 Tools like Cluely are powerful — but closed, expensive, and macOS-only. Hyprly is the Linux answer. It's a single Rust binary, free to use, and built on open infrastructure. The phone UI is compiled right into the binary — no frontend server, no Node.js, no deploy step. Open a URL on your phone and you're live.
 
-```
-Interview question asked → phone shows your talking points
-Technical deep-dive → phone shows the definition or code snippet
-Someone asks a hard follow-up → phone shows a suggested reply
-```
-
 <br />
 
 ## How it works
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│                           Your Computer                           │
-│                                                                   │
-│                                              │                    │
-│   PipeWire ──► VAD ──► 2s chunks ──► Groq Whisper (transcribe)   │
-│                                     Transcript cleanup            │
-│                                     (fillers, repeats, restarts)  │
-│                                              │                    │
-│                                     Groq LLM (streaming JSON)     │
-│                                              │                    │
-│                                     WebSocket broadcast           │
-└───────────────────────────────────────────────────────────────────┘
-                                               │
-                              ┌────────────────▼───────────────┐
-                              │           Your Phone            │
-                              │                                 │
-                              │  ┌─────────────────────────┐   │
-                              │  │  HYPRLY  •  Connected ●  │   │
-                              │  ├─────────────────────────┤   │
-                              │  │  talking_point  0.91     │   │
-                              │  │                          │   │
-                              │  │  Prioritize the          │   │
-                              │  │  migration first.        │   │
-                              │  │                          │   │
-                              │  │  • Higher dependency     │   │
-                              │  │    risk                  │   │
-                              │  │  • Reporting follows     │   │
-                              │  ├─────────────────────────┤   │
-                              │  │  ⏸ Pause    ✕ Clear     │   │
-                              │  └─────────────────────────┘   │
-                              └─────────────────────────────────┘
-```
+![Hyprly workflow](workflow.png)
 
 <br />
 
@@ -99,7 +61,7 @@ Uses `whisper-large-v3-turbo` for fast, accurate speech-to-text. Temporary WAV f
 Before the AI sees anything, the transcript is scrubbed: fillers (`uh`, `um`, `er`, `like`, `hmm`), consecutive repeats, and false starts (`no wait`, `i mean`, `sorry`, `actually`) are removed. The model gets clean, dense speech.
 
 **📱 Embedded mobile UI**  
-The HTML, CSS, and JS are compiled into the Rust binary with `include_str!`. The Axum server serves them from memory. Open `http://<your-ip>:8765` on any phone browser — no app install.
+The HTML, CSS, and JS are compiled into the Rust binary with `include_str!`. Open the local setup page at `http://<your-ip>:8765` to install Hyprly’s local CA certificate, then use the HTTPS app at `https://<your-ip>:8766` — no app install.
 
 </td>
 <td width="50%">
@@ -127,7 +89,7 @@ Pause and resume recording. Clear the transcript. Watch the live pipeline state 
 **Requirements:** Linux, PipeWire + WirePlumber, Rust, a Groq API key, and a phone on the same network.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/hyprly.git
+git clone https://github.com/patermars/hyprly.git
 cd hyprly
 
 # Set up config
@@ -141,45 +103,15 @@ export GROQ_API_KEY="gsk_..."
 cargo run --release -- daemon
 ```
 
-The terminal prints a 6-digit code and a local URL:
+The terminal prints a 6-digit code, local setup page, HTTPS pairing URL, CA fingerprint, and QR code. On first use, open the setup page on your phone and install Hyprly’s local CA certificate. Verify the downloaded certificate with the SHA-256 fingerprint shown in the terminal. Once trusted, open the HTTPS URL or scan the QR to pair:
 
 ```
 Hyprly mobile pairing code: 482913
-Open http://192.168.1.42:8765 on your phone
+Open the setup page: http://192.168.1.42:8765
+After trusting the CA, open https://192.168.1.42:8766
 ```
 
-Open the URL on your phone, enter the code, and you're live.
-
-<br />
-
-## What you'll see on your phone
-
-The AI responds with structured JSON. Here's what a typical answer looks like:
-
-```json
-{
-  "answer": "Prioritize the migration before the reporting sprint.",
-  "type": "talking_point",
-  "confidence": 0.91,
-  "bullets": [
-    "Migration carries the higher dependency risk",
-    "Reporting work can start after migration completes"
-  ],
-  "code": null
-}
-```
-
-Response types the model can return:
-
-| Type | When it's used |
-|---|---|
-| `direct_answer` | A factual question with a clear answer |
-| `talking_point` | A strategic or opinion-based question |
-| `definition` | A term or concept was introduced |
-| `code` | A technical implementation question |
-| `summary` | A lot of ground was covered; condense it |
-| `follow_up` | A good question to ask back |
-| `question_suggestion` | You might be asked something soon |
+Open the setup URL on your phone, download and trust the CA certificate in your device settings, then open the HTTPS page. Enter the six-digit code or scan the terminal QR. The local setup page includes install guidance and the certificate fingerprint. The HTTPS page’s camera button can then scan the terminal QR code.
 
 <br />
 
@@ -237,7 +169,7 @@ hyprly/
 │   ├── transcript.rs    — Filler removal, repeat collapse, false-start stripping
 │   ├── response.rs      — AiResponse types, JSON parser, retry logic, system prompt
 │   ├── config.rs        — TOML config loading with GROQ_API_KEY env var fallback
-│   ├── mobile.rs        — Axum HTTP + WebSocket server, pairing, broadcast hub
+│   ├── mobile.rs        — HTTP setup page, HTTPS app server, pairing, broadcast hub
 │   └── api/
 │       ├── groq.rs      — Groq Whisper transcription + streaming chat client
 │       └── types.rs     — Serde types for Groq API requests and responses
@@ -269,24 +201,6 @@ The system prompt instructs the LLM to return only a JSON object. If the first r
 Tokens flow through an unbounded `mpsc` channel from the Groq stream to the WebSocket handler. Each token is broadcast as an `answer_token` event. The phone's JavaScript reads the `answer` field out of the partial JSON string incrementally — it appears word-by-word as it's typed, with Markdown rendered live.
 
 <br />
-
-## Roadmap
-
-The core pipeline — record → transcribe → clean → AI → stream to phone — is working end-to-end. Here's what's next:
-
-- [ ] **QR-code pairing** — scan instead of type
-- [ ] **Secure pairing** — cryptographically random codes with expiration
-- [ ] **Question detection** — only trigger when someone asks *you* something
-- [ ] **Meeting modes** — interview, standup, technical, sales, customer support
-- [ ] **Action item extraction** — names, dates, commitments, owners
-- [ ] **Meeting summary** — one tap to recap everything
-- [ ] **Answer history** — scroll back through previous answers
-- [ ] **Parallel pipeline** — transcribe chunk N while recording chunk N+1
-- [ ] **HTTPS / WSS** — secure transport for non-LAN use
-- [ ] **systemd service** — start automatically on login
-- [ ] **Dark / light themes**
-
-See [`todo.md`](todo.md) for the full phase-by-phase breakdown.
 
 <br />
 

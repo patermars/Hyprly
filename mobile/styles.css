@@ -354,3 +354,16 @@ button:active { transform: translateY(1px) scale(.985); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.pair-code-entry { display: flex; min-width: 0; flex: 1; gap: 7px; }
+.pair-code-entry input { width: 0; }
+.scan-button { flex: 0 0 48px; padding: 9px; border-color: var(--border); color: var(--accent); background: var(--surface-raised); box-shadow: none; font-size: 20px; }
+.scan-button:hover { border-color: var(--accent-dim); background: var(--accent-wash); }
+#pair-form > button[type="submit"] { flex: 0 0 auto; }
+.qr-scanner { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(4, 7, 11, .78); backdrop-filter: blur(12px); }
+.qr-scan-panel { width: min(440px, 100%); padding: 18px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-strong); box-shadow: var(--shadow); }
+.qr-scan-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.qr-scan-header h2 { margin: 0; font-size: 17px; }
+.qr-scan-header button { margin-left: auto; }
+#qr-camera { display: block; width: 100%; max-height: 55dvh; border-radius: var(--radius-sm); background: #050608; object-fit: cover; }
+#qr-scan-status { margin-top: 12px; font-size: 12px; }

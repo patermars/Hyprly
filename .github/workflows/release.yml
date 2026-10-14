@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build x86_64 Linux release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package release archive and checksum
+        shell: bash
+        run: |
+          archive="hyprly-${GITHUB_REF_NAME}-x86_64-linux.tar.gz"
+          tar -czf "$archive" \
+            -C target/release hyprly \
+            -C "$GITHUB_WORKSPACE" README.md LICENSE config.example.toml
+          sha256sum "$archive" > checksums.txt
+
+      - name: Attach files to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hyprly-*.tar.gz
+            checksums.txt

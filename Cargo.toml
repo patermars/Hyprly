@@ -1,6 +1,6 @@
 [package]
 name = "hyprly"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2021"
 license = "MIT"
 description = "Headless AI meeting assistant with a mobile client"
@@ -20,6 +20,10 @@ anyhow = "1"
 futures-util = "0.3"
 dirs = "5"
 axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 hound = "3"
 tokio-util = "0.7"
 regex = "1"
+qrcode = { version = "0.14", default-features = false }
+rcgen = "0.14"
+sha2 = "0.10"

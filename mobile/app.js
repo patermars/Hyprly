@@ -4,6 +4,11 @@ const DOM = {
   pairCard: document.getElementById('pair-card'),
   pairForm: document.getElementById('pair-form'),
   pairCode: document.getElementById('pair-code'),
+  scanQr: document.getElementById('btn-scan-qr'),
+  qrScanner: document.getElementById('qr-scanner'),
+  qrCamera: document.getElementById('qr-camera'),
+  qrScanStatus: document.getElementById('qr-scan-status'),
+  closeScanner: document.getElementById('btn-close-scanner'),
   contextCard: document.getElementById('context-card'),
   contextToggle: document.getElementById('context-toggle'),
   contextClose: document.getElementById('context-close'),
@@ -39,6 +44,8 @@ let pairedCode = '';
 let paused = false;
 let streamingAnswer = '';
 let lastRenderedStreamedCode = '';
+let cameraStream = null;
+let cameraScanTimer = null;
 const availableThemes = ['midnight', 'paper', 'aurora'];
 function applyTheme(theme) {
   const selected = availableThemes.includes(theme) ? theme : 'midnight';
@@ -48,9 +55,16 @@ function applyTheme(theme) {
 }
 applyTheme(localStorage.getItem('hyprly-theme') || 'midnight');
 DOM.themeSelect.onchange = () => applyTheme(DOM.themeSelect.value);
+const qrCode = new URLSearchParams(location.search).get('code');
+if (qrCode && /^\d{6}$/.test(qrCode)) {
+  DOM.pairCode.value = qrCode;
+  history.replaceState(null, '', location.pathname + location.hash);
+  connect(qrCode);
+}
 function connect(code) {
   cancelReconnect();
-  socket = new WebSocket(`ws://${location.host}/ws`);
+  const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  socket = new WebSocket(`${wsProtocol}//${location.host}/ws`);
   socket.onopen = () => {
     socket.send(JSON.stringify({ type: 'pair', code }));
   };
@@ -309,6 +323,66 @@ DOM.pairForm.onsubmit = (e) => {
   const val = DOM.pairCode.value.trim();
   if (val.length === 6) connect(val);
 };
+function pairingCodeFromQr(value) {
+  try {
+    const parsed = new URL(value);
+    const code = parsed.searchParams.get('code');
+    if (code && /^\d{6}$/.test(code)) return code;
+  } catch (_) {}
+  const match = value.match(/(?:^|\D)(\d{6})(?:\D|$)/);
+  return match ? match[1] : null;
+}
+function stopQrScanner() {
+  if (cameraScanTimer) clearTimeout(cameraScanTimer);
+  cameraScanTimer = null;
+  if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
+  cameraStream = null;
+  DOM.qrCamera.srcObject = null;
+  DOM.qrScanner.hidden = true;
+}
+async function startQrScanner() {
+  DOM.qrScanner.hidden = false;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    DOM.qrScanStatus.textContent = 'Camera access needs the secure HTTPS page. Open the setup page, install Hyprly’s CA certificate, then return to the HTTPS pairing link.';
+    return;
+  }
+  if (!('BarcodeDetector' in window)) {
+    DOM.qrScanStatus.textContent = 'QR scanning is not supported by this browser. Use the phone camera app to scan the computer QR, or enter the code.';
+    return;
+  }
+  try {
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    DOM.qrCamera.srcObject = cameraStream;
+    await DOM.qrCamera.play();
+    DOM.qrScanStatus.textContent = 'Point your camera at the QR code on your computer.';
+    const scan = async () => {
+      if (!cameraStream) return;
+      try {
+        const codes = await detector.detect(DOM.qrCamera);
+        const code = codes.map(item => pairingCodeFromQr(item.rawValue || '')).find(Boolean);
+        if (code) {
+          DOM.pairCode.value = code;
+          stopQrScanner();
+          connect(code);
+          return;
+        }
+      } catch (_) {}
+      cameraScanTimer = setTimeout(scan, 180);
+    };
+    scan();
+  } catch (error) {
+    if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+    DOM.qrCamera.srcObject = null;
+    DOM.qrScanStatus.textContent = error.name === 'NotAllowedError'
+      ? 'Camera permission was denied. Allow camera access in your browser or enter the code.'
+      : 'Could not start the camera. Enter the code or scan the QR with your phone camera app.';
+  }
+}
+DOM.scanQr.onclick = startQrScanner;
+DOM.closeScanner.onclick = stopQrScanner;
+DOM.qrScanner.addEventListener('click', event => { if (event.target === DOM.qrScanner) stopQrScanner(); });
 try {
   const savedContext = JSON.parse(localStorage.getItem('hyprly-interview-context') || '{}');
   DOM.contextResume.value = savedContext.resume || '';

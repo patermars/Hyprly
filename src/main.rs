@@ -34,7 +34,7 @@ fn main() -> Result<()> {
 fn run_daemon() -> Result<()> {
     let config = config::Config::load()?;
     let context = context::ContextStore::load(&config.context, &config::Config::config_path())?;
-    let mobile_hub = mobile::MobileHub::new();
+    let mobile_hub = mobile::MobileHub::new()?;
     mobile::start(mobile_hub.clone());
     let runtime = Runtime::new()?;
     runtime.block_on(audio::run(config.audio, config.api, context, mobile_hub))?;
