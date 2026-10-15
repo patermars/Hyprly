@@ -2,6 +2,7 @@ mod api;
 mod audio;
 mod config;
 mod context;
+mod gui;
 mod mobile;
 mod response;
 mod topic;
@@ -12,21 +13,23 @@ use clap::{Parser, Subcommand};
 use tokio::runtime::Runtime;
 
 #[derive(Parser)]
-#[command(name = "hyprly", about = "Headless AI meeting assistant")]
+#[command(name = "hyprly", about = "GTK4 AI meeting assistant")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(hide = true)]
     Daemon,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Daemon => run_daemon()?,
+        Some(Commands::Daemon) => run_daemon()?,
+        None => gui::run(),
     }
     Ok(())
 }
@@ -35,6 +38,9 @@ fn run_daemon() -> Result<()> {
     let config = config::Config::load()?;
     let context = context::ContextStore::load(&config.context, &config::Config::config_path())?;
     let mobile_hub = mobile::MobileHub::new()?;
+    println!("{}", mobile_hub.pairing_info());
+    use std::io::Write;
+    std::io::stdout().flush()?;
     mobile::start(mobile_hub.clone());
     let runtime = Runtime::new()?;
     runtime.block_on(audio::run(config.audio, config.api, context, mobile_hub))?;

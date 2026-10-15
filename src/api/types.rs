@@ -31,8 +31,6 @@ pub struct ChatResponse {
 #[derive(Debug, Deserialize)]
 pub struct Choice {
     pub delta: Option<Delta>,
-    pub message: Option<ChatMessage>,
-    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -9,7 +9,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use qrcode::{render::unicode::Dense1x2, QrCode};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose,
@@ -29,7 +28,11 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::{io::AsyncWriteExt, process::Command, sync::{broadcast, watch}};
+use tokio::{
+    io::AsyncWriteExt,
+    process::Command,
+    sync::{broadcast, watch},
+};
 
 use crate::response::AiResponse;
 
@@ -41,6 +44,7 @@ pub struct MobileHub {
     commands: broadcast::Sender<MobileCommand>,
     last_answer: Arc<Mutex<Option<String>>>,
     https_url: Arc<String>,
+    http_url: Arc<String>,
     ca_certificate: Arc<String>,
     server_certificate: Arc<String>,
     server_key: Arc<String>,
@@ -73,18 +77,6 @@ impl MobileHub {
             .unwrap_or_else(|| "<this-machine-ip>".into());
         let http_base = format!("http://{host}:8765");
         let https_base = format!("https://{host}:8766");
-        let url = format!("{https_base}/?code={code}");
-        println!("Hyprly mobile pairing code: {code}");
-        println!("Open the setup page on your phone first: {http_base}");
-        println!("After trusting the CA certificate, use {url}");
-        println!(
-            "CA SHA-256 fingerprint: {}",
-            certificate_fingerprint(&ca_certificate)
-        );
-        println!("Scan this QR code to open the secure pairing URL:");
-        if let Ok(qr) = QrCode::new(url.as_bytes()) {
-            println!("{}", qr.render::<Dense1x2>().quiet_zone(true).build());
-        }
         Ok(Self {
             code: Arc::new(code),
             events,
@@ -92,11 +84,22 @@ impl MobileHub {
             commands,
             last_answer: Arc::new(Mutex::new(None)),
             https_url: Arc::new(https_base),
+            http_url: Arc::new(http_base),
             ca_certificate: Arc::new(ca_certificate),
             server_certificate: Arc::new(server_certificate),
             server_key: Arc::new(server_key),
             connected_clients: Arc::new(AtomicUsize::new(0)),
             connected,
+        })
+    }
+
+    pub fn pairing_info(&self) -> serde_json::Value {
+        serde_json::json!({
+            "event": "pairing",
+            "code": self.code.as_str(),
+            "setup_url": self.http_url.as_str(),
+            "secure_url": format!("{}/?code={}", self.https_url, self.code),
+            "fingerprint": certificate_fingerprint(&self.ca_certificate),
         })
     }
 
@@ -294,6 +297,30 @@ async fn script() -> Response {
             "application/javascript; charset=utf-8",
         )],
         include_str!("../mobile/app.js"),
+    )
+        .into_response()
+}
+
+async fn logo() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../assets/logo.png").as_slice(),
+    )
+        .into_response()
+}
+
+async fn logo_text() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../assets/logo_text.png").as_slice(),
+    )
+        .into_response()
+}
+
+async fn logo_text_white() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../assets/logo_text_white.png").as_slice(),
     )
         .into_response()
 }
@@ -496,6 +523,9 @@ pub fn start(hub: MobileHub) {
                 .route("/", get(index))
                 .route("/styles.css", get(styles))
                 .route("/app.js", get(script))
+                .route("/logo.png", get(logo))
+                .route("/logo-text.png", get(logo_text))
+                .route("/logo-text-white.png", get(logo_text_white))
                 .route("/manifest.webmanifest", get(manifest))
                 .route("/extract", post(extract_document))
                 .route("/ws", get(websocket))

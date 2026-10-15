@@ -5,20 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#101114">
 <title>Hyprly</title>
+<link rel="icon" type="image/png" href="/logo.png">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <main class="shell">
 <header class="topbar">
-<div class="brand-mark">H</div>
-<div class="title-section">
-<span class="eyebrow">HYPRLY</span>
-<h1>Live assistant</h1>
-</div>
+<img id="brand-wordmark" class="brand-wordmark" src="/logo-text.png" alt="Hyprly">
+<div class="topbar-controls">
 <button id="context-toggle" class="context-toggle" type="button" aria-controls="context-card" aria-expanded="false" hidden><span class="context-icon">☷</span><span class="context-toggle-label">Context</span></button>
 <label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select" aria-label="Color theme"><option value="midnight">Midnight</option><option value="paper">Paper</option><option value="aurora">Aurora</option></select></label>
 <div id="connection-status" class="status-pill">Disconnected</div>
+</div>
 </header>
 <section id="pair-card" class="pair-card">
 <div class="section-heading">

@@ -1,0 +1,22 @@
+pkgbase = hyprly-git
+	pkgdesc = GTK4 AI meeting assistant with a mobile client
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/patermars/hyprly
+	arch = x86_64
+	license = MIT
+	makedepends = rust
+	makedepends = cargo
+	makedepends = git
+	makedepends = pkgconf
+	depends = gtk4
+	depends = pipewire
+	depends = wireplumber
+	optdepends = poppler: PDF upload support
+	optdepends = unzip: DOCX upload support
+	provides = hyprly
+	conflicts = hyprly
+	source = git+https://github.com/patermars/hyprly.git
+	sha256sums = SKIP
+
+pkgname = hyprly-git

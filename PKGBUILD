@@ -1,12 +1,16 @@
 pkgname=hyprly-git
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Headless AI meeting assistant with a mobile client'
+pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')
 url='https://github.com/patermars/hyprly'
 license=('MIT')
-depends=('pipewire' 'wireplumber')
-makedepends=('rust' 'cargo' 'git')
+provides=('hyprly')
+conflicts=('hyprly')
+depends=('gtk4' 'pipewire' 'wireplumber')
+optdepends=('poppler: PDF upload support'
+            'unzip: DOCX upload support')
+makedepends=('rust' 'cargo' 'git' 'pkgconf')
 source=("git+${url}.git")
 sha256sums=('SKIP')
 
@@ -32,5 +36,7 @@ build() {
 package() {
     cd hyprly
     install -Dm755 target/release/hyprly "$pkgdir/usr/bin/hyprly"
+    install -Dm644 data/hyprly.desktop "$pkgdir/usr/share/applications/hyprly.desktop"
+    install -Dm644 assets/logo.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/logo.png"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

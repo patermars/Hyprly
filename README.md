@@ -2,6 +2,10 @@
 
 <br />
 
+<img src="assets/logo_text.png" alt="Hyprly" width="420">
+
+<br />
+
 ```
 ██╗  ██╗██╗   ██╗██████╗ ██████╗ ██╗  ██╗   ██╗
 ██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██║  ╚██╗ ██╔╝
@@ -27,21 +31,23 @@ Your computer listens. Your phone shows the answers. Nobody sees a thing.
 
 ---
 
+Tools like Cluely are powerful — but closed, expensive, and macOS-only. Hyprly is the Linux answer. It's a single Rust binary, free to use, and built on open infrastructure. The phone UI is compiled right into the binary — no frontend server, no Node.js, no deploy step. Open a URL on your phone and you're live.
+
 Hyprly runs silently in the background during your meetings. It captures your system audio through PipeWire, transcribes it with Groq Whisper, cleans up the transcript, and streams a structured AI response to your phone over WebSocket — in near real-time.
 
 No screen overlays. No desktop clutter. Your display stays completely clean. You glance at your phone.
 
 <br />
 
-## The idea
+## Clones over time
 
-Tools like Cluely are powerful — but closed, expensive, and macOS-only. Hyprly is the Linux answer. It's a single Rust binary, free to use, and built on open infrastructure. The phone UI is compiled right into the binary — no frontend server, no Node.js, no deploy step. Open a URL on your phone and you're live.
+![Hyprly clone history](assets/repo-growth-clones.svg)
 
 <br />
 
 ## How it works
 
-![Hyprly workflow](workflow.png)
+![Hyprly workflow](assets/workflow.png)
 
 <br />
 
@@ -86,32 +92,21 @@ Pause and resume recording. Clear the transcript. Watch the live pipeline state 
 
 ## Quick Start
 
-**Requirements:** Linux, PipeWire + WirePlumber, Rust, a Groq API key, and a phone on the same network.
+**Requirements:** Linux with GTK4, PipeWire + WirePlumber, Rust, a Groq API key, and a phone on the same network.
 
 ```bash
 git clone https://github.com/patermars/hyprly.git
 cd hyprly
 
-# Set up config
-mkdir -p ~/.config/hyprly
-cp config.example.toml ~/.config/hyprly/config.toml
-
-# Set your Groq API key (free tier works fine)
-export GROQ_API_KEY="gsk_..."
-
-# Build and run
-cargo run --release -- daemon
+# Build and launch the GTK4 app
+cargo run --release
 ```
 
-The terminal prints a 6-digit code, local setup page, HTTPS pairing URL, CA fingerprint, and QR code. On first use, open the setup page on your phone and install Hyprly’s local CA certificate. Verify the downloaded certificate with the SHA-256 fingerprint shown in the terminal. Once trusted, open the HTTPS URL or scan the QR to pair:
+On first launch, enter your Groq API key and use **Test Groq API** to check it. Press **Save key** to store it in `~/.config/hyprly/config.toml` with private file permissions, then press **Connect** to start Hyprly. **Test PipeWire audio** records a short sample to verify capture; another button checks optional PDF and DOCX tools. The app starts automatically on later launches when a key is configured.
 
-```
-Hyprly mobile pairing code: 482913
-Open the setup page: http://192.168.1.42:8765
-After trusting the CA, open https://192.168.1.42:8766
-```
+The main window displays the pairing code, setup page, secure pairing URL, certificate fingerprint, and QR code. On first use, open the setup page on your phone and install Hyprly’s local CA certificate. Verify it with the fingerprint shown in the app, then open the secure URL or scan the QR code. Closing the window leaves Hyprly in the system tray; the tray menu can connect, disconnect, reopen the window, or exit.
 
-Open the setup URL on your phone, download and trust the CA certificate in your device settings, then open the HTTPS page. Enter the six-digit code or scan the terminal QR. The local setup page includes install guidance and the certificate fingerprint. The HTTPS page’s camera button can then scan the terminal QR code.
+The local setup page includes certificate installation guidance. The HTTPS page’s camera button can scan the QR code shown in the desktop app.
 
 <br />
 
@@ -164,7 +159,8 @@ source = "54"   # node ID from wpctl status
 ```
 hyprly/
 ├── src/
-│   ├── main.rs          — CLI entry point (cargo run -- daemon)
+│   ├── main.rs          — GTK4 app launcher and hidden daemon entry point
+│   ├── gui.rs           — Desktop controls, checks, pairing QR, and tray actions
 │   ├── audio.rs         — PipeWire recording, VAD, speech detection, AI pipeline
 │   ├── transcript.rs    — Filler removal, repeat collapse, false-start stripping
 │   ├── response.rs      — AiResponse types, JSON parser, retry logic, system prompt
@@ -173,11 +169,13 @@ hyprly/
 │   └── api/
 │       ├── groq.rs      — Groq Whisper transcription + streaming chat client
 │       └── types.rs     — Serde types for Groq API requests and responses
-└── mobile/
+├── mobile/
     ├── index.html       — Phone UI shell
     ├── styles.css       — Mobile-first dark theme
     ├── app.js           — WebSocket client, streaming Markdown renderer, syntax highlighter
-    └── manifest.webmanifest
+│   └── manifest.webmanifest
+└── data/
+    └── hyprly.desktop   — Application launcher entry
 ```
 
 <br />
@@ -209,6 +207,7 @@ Tokens flow through an unbounded `mpsc` channel from the Groq stream to the WebS
 | Requirement | Notes |
 |---|---|
 | Linux | Any modern distro |
+| GTK4 | Desktop control app |
 | PipeWire + WirePlumber | For audio capture |
 | `pw-record` | Ships with PipeWire |
 | `wpctl` | Ships with WirePlumber |
@@ -217,6 +216,7 @@ Tokens flow through an unbounded `mpsc` channel from the Groq stream to the WebS
 | Rust + Cargo | Install from [rustup.rs](https://rustup.rs/) |
 | [Groq API key](https://console.groq.com/keys) | Free tier is enough |
 | Phone on the same Wi-Fi | Any browser, no app install |
+| StatusNotifier tray host | Optional; for example, Waybar with its tray module enabled |
 
 <br />
 

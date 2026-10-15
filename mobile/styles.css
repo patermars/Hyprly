@@ -92,20 +92,15 @@ body {
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
 }
-.brand-mark {
+.brand-wordmark {
   display: grid;
-  flex: 0 0 42px;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent) 48%, transparent);
-  border-radius: 14px;
-  color: var(--accent-ink);
-  background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 74%, white));
-  box-shadow: 0 6px 22px color-mix(in srgb, var(--accent) 20%, transparent);
-  font-size: 22px;
-  font-weight: 850;
+  flex: 0 0 auto;
+  width: 148px;
+  height: 48px;
+  object-fit: contain;
+  object-position: left center;
 }
+.topbar-controls { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-left: auto; }
 .title-section { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
 h1, h2, h3, h4, p { margin-top: 0; }
 h1 { margin: 0; font-size: 18px; font-weight: 680; letter-spacing: -.025em; }
@@ -318,7 +313,7 @@ button:active { transform: translateY(1px) scale(.985); }
 .listening::before { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); content: ""; vertical-align: 1px; }
 @media (max-width: 760px) {
   .topbar { gap: 9px; height: 64px; padding: 8px 12px; }
-  .brand-mark { flex-basis: 36px; width: 36px; height: 36px; border-radius: 12px; font-size: 19px; }
+  .brand-wordmark { width: 118px; height: 38px; }
   h1 { font-size: 15px; }
   .eyebrow { font-size: 8px; }
   .context-toggle { padding: 8px 9px; font-size: 11px; }
@@ -328,6 +323,7 @@ button:active { transform: translateY(1px) scale(.985); }
   .theme-control select { min-height: 32px; max-width: 91px; padding: 5px 20px 5px 7px; font-size: 10px; }
   .status-pill { gap: 5px; padding: 6px 7px; font-size: 9px; }
   .status-pill::before { width: 6px; height: 6px; }
+  .topbar-controls { gap: 7px; }
   #answer-card { width: calc(100vw - 24px); max-height: calc(100dvh - 260px); padding: 18px; }
   .answer-card.empty { min-height: 190px; }
   #answer-text { font-size: 15px; }
@@ -338,8 +334,8 @@ button:active { transform: translateY(1px) scale(.985); }
 }
 @media (max-width: 430px) {
   .topbar { gap: 7px; }
-  .title-section .eyebrow { display: none; }
-  h1 { font-size: 14px; }
+  .brand-wordmark { width: 100px; }
+  .topbar-controls { gap: 5px; }
   .context-toggle { padding: 8px; }
   .context-icon { margin: 0; }
   .context-toggle-label { display: none; }

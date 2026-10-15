@@ -1,0 +1,15 @@
+pkgbase = hyprly
+	pkgdesc = Headless AI meeting assistant with a mobile client
+	pkgver = 0.9
+	pkgrel = 1
+	url = https://github.com/patermars/Hyprly
+	arch = x86_64
+	license = MIT
+	depends = pipewire
+	depends = wireplumber
+	optdepends = poppler: PDF upload support
+	optdepends = unzip: DOCX upload support
+	source = hyprly-0.9-x86_64-linux.tar.gz::https://github.com/patermars/Hyprly/releases/download/v0.9/hyprly-v0.9-x86_64-linux.tar.gz
+	sha256sums = 733553360e82f45bda7f131bd4d34bf815fc46f8bb890bd07f2b2734442b5b9c
+
+pkgname = hyprly

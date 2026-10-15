@@ -1,6 +1,7 @@
 const DOM = {
   connectionStatus: document.getElementById('connection-status'),
   themeSelect: document.getElementById('theme-select'),
+  brandWordmark: document.getElementById('brand-wordmark'),
   pairCard: document.getElementById('pair-card'),
   pairForm: document.getElementById('pair-form'),
   pairCode: document.getElementById('pair-code'),
@@ -51,6 +52,7 @@ function applyTheme(theme) {
   const selected = availableThemes.includes(theme) ? theme : 'midnight';
   document.documentElement.dataset.theme = selected;
   DOM.themeSelect.value = selected;
+  DOM.brandWordmark.src = selected === 'paper' ? '/logo-text.png' : '/logo-text-white.png';
   localStorage.setItem('hyprly-theme', selected);
 }
 applyTheme(localStorage.getItem('hyprly-theme') || 'midnight');

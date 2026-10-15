@@ -3,7 +3,7 @@ name = "hyprly"
 version = "0.9.0"
 edition = "2021"
 license = "MIT"
-description = "Headless AI meeting assistant with a mobile client"
+description = "GTK4 AI meeting assistant with a mobile client"
 
 [[bin]]
 name = "hyprly"
@@ -27,3 +27,7 @@ regex = "1"
 qrcode = { version = "0.14", default-features = false }
 rcgen = "0.14"
 sha2 = "0.10"
+gtk4 = "0.9"
+ksni = "0.3"
+toml_edit = "0.22"
+png = "0.17"

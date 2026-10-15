@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hyprly
+Comment=AI meeting assistant with a phone companion
+Exec=hyprly
+Icon=logo
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupNotify=true

@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::{env, fs, path::PathBuf};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::{env, fs, io::Write, path::PathBuf};
 
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct Config {
@@ -177,5 +178,47 @@ impl Config {
         config.audio.debounce_ms = config.audio.debounce_ms.clamp(150, 700);
         config.context.max_chars = config.context.max_chars.clamp(1_000, 100_000);
         Ok(config)
+    }
+
+    pub fn save_api_key(api_key: &str) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+
+        let mut document = if path.exists() {
+            fs::read_to_string(&path)?.parse::<toml_edit::DocumentMut>()?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+        if !document.contains_key("api") {
+            document["api"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let api = document["api"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("The [api] config section must be a TOML table"))?;
+        api["api_key"] = toml_edit::value(api_key.trim());
+
+        if !document.contains_key("audio") {
+            document["audio"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let audio = document["audio"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("The [audio] config section must be a TOML table"))?;
+        if !audio.contains_key("enabled") {
+            audio["enabled"] = toml_edit::value(true);
+        }
+
+        let serialized = document.to_string();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
     }
 }

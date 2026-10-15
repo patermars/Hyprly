@@ -5,5 +5,6 @@
   "display": "standalone",
   "background_color": "#101114",
   "theme_color": "#101114",
-  "description": "Private mobile companion for the Hyprly meeting assistant"
+  "description": "Private mobile companion for the Hyprly meeting assistant",
+  "icons": [{"src": "/logo.png", "sizes": "512x512", "type": "image/png"}]
 }
