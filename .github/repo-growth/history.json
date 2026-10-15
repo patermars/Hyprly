@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "repository": "patermars/Hyprly",
+  "updatedAt": "2026-10-15T00:49:12.560Z",
+  "backfilledAt": "",
+  "totals": {
+    "downloads": 0,
+    "clones": 35
+  },
+  "assets": {},
+  "traffic": {
+    "cloneDays": {
+      "2026-09-30": {
+        "count": 1,
+        "uniques": 1
+      },
+      "2026-10-01": {
+        "count": 0,
+        "uniques": 0
+      },
+      "2026-10-02": {
+        "count": 1,
+        "uniques": 1
+      },
+      "2026-10-03": {
+        "count": 0,
+        "uniques": 0
+      },
+      "2026-10-04": {
+        "count": 0,
+        "uniques": 0
+      },
+      "2026-10-05": {
+        "count": 0,
+        "uniques": 0
+      },
+      "2026-10-06": {
+        "count": 2,
+        "uniques": 2
+      },
+      "2026-10-07": {
+        "count": 0,
+        "uniques": 0
+      },
+      "2026-10-08": {
+        "count": 26,
+        "uniques": 15
+      },
+      "2026-10-09": {
+        "count": 1,
+        "uniques": 1
+      },
+      "2026-10-10": {
+        "count": 1,
+        "uniques": 1
+      },
+      "2026-10-11": {
+        "count": 1,
+        "uniques": 1
+      },
+      "2026-10-12": {
+        "count": 2,
+        "uniques": 2
+      },
+      "2026-10-13": {
+        "count": 0,
+        "uniques": 0
+      }
+    }
+  },
+  "points": [
+    {
+      "date": "2026-09-30",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 1
+    },
+    {
+      "date": "2026-10-01",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 1
+    },
+    {
+      "date": "2026-10-02",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 2
+    },
+    {
+      "date": "2026-10-03",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 2
+    },
+    {
+      "date": "2026-10-04",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 2
+    },
+    {
+      "date": "2026-10-05",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 2
+    },
+    {
+      "date": "2026-10-06",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 4
+    },
+    {
+      "date": "2026-10-07",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 4
+    },
+    {
+      "date": "2026-10-08",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 30
+    },
+    {
+      "date": "2026-10-09",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 31
+    },
+    {
+      "date": "2026-10-10",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 32
+    },
+    {
+      "date": "2026-10-11",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 33
+    },
+    {
+      "date": "2026-10-12",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 35
+    },
+    {
+      "date": "2026-10-13",
+      "stars": null,
+      "forks": null,
+      "downloads": null,
+      "clones": 35
+    },
+    {
+      "date": "2026-10-15",
+      "stars": 0,
+      "forks": 0,
+      "downloads": 0,
+      "clones": 35
+    }
+  ]
+}
