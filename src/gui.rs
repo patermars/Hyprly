@@ -26,6 +26,7 @@ struct PairingInfo {
 
 enum UiEvent {
     Pairing(PairingInfo),
+    UpdateAvailable { version: String, url: String },
     Message(String),
     GroqError(String),
 }
@@ -117,6 +118,9 @@ struct AppState {
     qr_code: Rc<std::cell::RefCell<Option<QrCode>>>,
     connect_button: gtk::Button,
     disconnect_button: gtk::Button,
+    update_notice: gtk::Box,
+    update_label: gtk::Label,
+    update_link: gtk::LinkButton,
     child: Option<Child>,
     backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
     event_tx: Sender<UiEvent>,
@@ -223,6 +227,32 @@ fn build_window(application: &gtk::Application) {
     header_actions.append(&theme_picker);
     header.append(&header_actions);
     root.append(&header);
+
+    let update_notice = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    update_notice.add_css_class("update-notice");
+    let update_label = gtk::Label::new(None);
+    update_label.set_xalign(0.0);
+    update_label.set_hexpand(true);
+    update_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    update_label.set_max_width_chars(32);
+    let update_link = gtk::LinkButton::with_label(
+        "https://github.com/patermars/Hyprly/releases/latest",
+        "View",
+    );
+    update_link.add_css_class("flat");
+    update_link.set_tooltip_text(Some("Open the latest Hyprly release"));
+    let dismiss_update = gtk::Button::from_icon_name("window-close-symbolic");
+    dismiss_update.add_css_class("flat");
+    dismiss_update.set_tooltip_text(Some("Dismiss update notice"));
+    update_notice.append(&update_label);
+    update_notice.append(&update_link);
+    update_notice.append(&dismiss_update);
+    update_notice.set_visible(false);
+    root.append(&update_notice);
+    dismiss_update.connect_clicked({
+        let update_notice = update_notice.clone();
+        move |_| update_notice.set_visible(false)
+    });
 
     let columns = gtk::Grid::new();
     columns.set_column_spacing(18);
@@ -401,6 +431,9 @@ fn build_window(application: &gtk::Application) {
         qr_code,
         connect_button: connect.clone(),
         disconnect_button: disconnect.clone(),
+        update_notice,
+        update_label,
+        update_link,
         child: None,
         backend_stdin: None,
         event_tx,
@@ -412,6 +445,7 @@ fn build_window(application: &gtk::Application) {
         recording: None,
         trigger_label: None,
     }));
+    check_for_updates(state.borrow().event_tx.clone());
 
     settings_button.connect_clicked({
         let state = state.clone();
@@ -564,7 +598,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
         .title("Hyprly Settings")
         .transient_for(&window)
         .modal(true)
-        .default_width(980)
+        .default_width(1200)
         .default_height(680)
         .build();
     let content = dialog.content_area();
@@ -574,8 +608,10 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     content.set_margin_start(24);
     content.set_margin_end(24);
     let tabs = gtk::Notebook::new();
+    tabs.set_hexpand(true);
     tabs.set_vexpand(true);
     let api_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    api_page.set_hexpand(true);
     api_page.set_margin_top(20);
     api_page.set_margin_bottom(20);
     api_page.set_margin_start(20);
@@ -616,6 +652,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     api_page.append(&settings_row("Answer length", "The maximum size of an AI answer. Higher values allow longer replies and use more of your quota.", &max_tokens));
 
     let audio_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    audio_page.set_hexpand(true);
     audio_page.set_margin_top(20);
     audio_page.set_margin_bottom(20);
     audio_page.set_margin_start(20);
@@ -749,14 +786,18 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     ));
 
     let context_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    context_page.set_hexpand(true);
     context_page.set_margin_top(20);
     context_page.set_margin_bottom(20);
     context_page.set_margin_start(20);
     context_page.set_margin_end(20);
     context_page.append(&section_heading("Reference context"));
-    context_page.append(&gtk::Label::new(Some(
+    let context_intro = gtk::Label::new(Some(
         "Add one file path per line. These files are loaded locally and included as AI context.",
-    )));
+    ));
+    context_intro.set_wrap(true);
+    context_intro.set_xalign(0.0);
+    context_page.append(&context_intro);
     let context_files = gtk::TextView::new();
     context_files.set_monospace(true);
     context_files.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -782,14 +823,18 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     ));
 
     let screen_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    screen_page.set_hexpand(true);
     screen_page.set_margin_top(20);
     screen_page.set_margin_bottom(20);
     screen_page.set_margin_start(20);
     screen_page.set_margin_end(20);
     screen_page.append(&section_heading("Ask about the screen"));
-    screen_page.append(&gtk::Label::new(Some(
+    let screen_intro = gtk::Label::new(Some(
         "Record a mouse gesture once. Hyprly watches for it while running, captures the screen, and sends the image to Groq's vision model to read and answer it.",
-    )));
+    ));
+    screen_intro.set_wrap(true);
+    screen_intro.set_xalign(0.0);
+    screen_page.append(&screen_intro);
     let vision_model = gtk::Entry::builder()
         .text(&config.screen.vision_model)
         .hexpand(true)
@@ -819,9 +864,12 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
         &trigger_label,
     ));
     screen_page.append(&gesture_actions);
-    screen_page.append(&gtk::Label::new(Some(
+    let screen_privacy_note = gtk::Label::new(Some(
         "Screen images are sent to Groq. If recording times out, allow your user to read the mouse device under /dev/input, then restart Hyprly. Only mouse button presses are used; keyboard input is ignored.",
-    )));
+    ));
+    screen_privacy_note.set_wrap(true);
+    screen_privacy_note.set_xalign(0.0);
+    screen_page.append(&screen_privacy_note);
     record_gesture.connect_clicked({
         let state = state.clone();
         let trigger_label = trigger_label.clone();
@@ -864,6 +912,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     let scroller = gtk::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&tabs)
         .build();
     content.append(&scroller);
@@ -1129,6 +1178,9 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
       .app-header {{ padding: 0 0 16px; border-bottom: 1px solid {border}; }}
       .wordmark {{ background: transparent; }}
       .card {{ background: {surface}; border: 1px solid {border}; border-radius: 18px; padding: 20px; }}
+      .update-notice {{ background: {surface}; border: 1px solid {border}; border-radius: 9px; padding: 3px 8px; }}
+      .update-notice label {{ color: {secondary}; font-size: 12px; }}
+      .update-notice button {{ min-height: 0; padding: 3px 7px; border: none; background: transparent; }}
       .card > label.heading {{ color: {text}; font-size: 15px; font-weight: 700; padding-bottom: 7px; border-bottom: 1px solid {border}; }}
       entry {{ color: {text}; background: {input}; border: 1px solid {border}; border-radius: 10px; min-height: 38px; padding: 8px 12px; }}
       entry:focus {{ border-color: {accent}; box-shadow: 0 0 0 2px alpha({accent}, .22); }}
@@ -1198,6 +1250,73 @@ fn save_current_key(state: &Rc<std::cell::RefCell<AppState>>) {
             .status
             .set_text(&format!("Could not save API key: {error}")),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubReleaseInfo {
+    tag_name: String,
+    html_url: String,
+}
+
+fn check_for_updates(events: Sender<UiEvent>) {
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        let update = runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .user_agent(concat!("Hyprly/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .ok()?;
+            let response = client
+                .get("https://api.github.com/repos/patermars/Hyprly/releases/latest")
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let release = response.json::<GitHubReleaseInfo>().await.ok()?;
+            let current_version = parse_release_version(env!("CARGO_PKG_VERSION"))?;
+            let latest_version = parse_release_version(&release.tag_name)?;
+            if latest_version <= current_version {
+                return None;
+            }
+            let url = if release
+                .html_url
+                .starts_with("https://github.com/patermars/Hyprly/releases/")
+            {
+                release.html_url
+            } else {
+                "https://github.com/patermars/Hyprly/releases/latest".to_string()
+            };
+            Some(UiEvent::UpdateAvailable {
+                version: release.tag_name,
+                url,
+            })
+        });
+        if let Some(update) = update {
+            let _ = events.send(update);
+        }
+    });
+}
+
+fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim().strip_prefix('v').unwrap_or(version.trim());
+    let numeric = version.split(['-', '+']).next()?;
+    let mut parts = numeric.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
@@ -1410,6 +1529,13 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
                     .set_text(&format!("Certificate fingerprint: {}", info.fingerprint));
                 *state_ref.qr_code.borrow_mut() = QrCode::new(info.secure_url.as_bytes()).ok();
                 state_ref.qr_area.queue_draw();
+            }
+            UiEvent::UpdateAvailable { version, url } => {
+                state_ref
+                    .update_label
+                    .set_text(&format!("Update available: {version}"));
+                state_ref.update_link.set_uri(&url);
+                state_ref.update_notice.set_visible(true);
             }
             UiEvent::Message(message) => state_ref.status.set_text(&message),
             UiEvent::GroqError(message) => state_ref.status.set_text(&message),
