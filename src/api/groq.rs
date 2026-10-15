@@ -9,7 +9,7 @@ const GROQ_API_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
 
 pub struct GroqClient {
     client: Client,
-    api_key: String,
+    api_keys: Vec<String>,
     model: String,
     max_tokens: u32,
 }
@@ -23,8 +23,15 @@ pub struct TranscriptionResult {
 impl GroqClient {
     pub fn new(config: &ApiConfig) -> Self {
         Self {
-            client: Client::new(),
-            api_key: config.api_key.clone(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("valid HTTP client configuration"),
+            api_keys: if config.api_keys.is_empty() {
+                vec![config.api_key.clone()]
+            } else {
+                config.api_keys.clone()
+            },
             model: config.model.clone(),
             max_tokens: config.max_tokens,
         }
@@ -36,23 +43,51 @@ impl GroqClient {
         model: &str,
         language: &str,
     ) -> Result<TranscriptionResult> {
-        let file = reqwest::multipart::Part::file(path)
-            .await?
-            .file_name("meeting.wav");
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", model.to_string())
-            .text("response_format", "verbose_json")
-            .part("file", file);
-        if !language.trim().is_empty() {
-            form = form.text("language", language.trim().to_string());
+        let mut last_error = None;
+        let mut response = None;
+        for key in &self.api_keys {
+            let file = reqwest::multipart::Part::file(path)
+                .await?
+                .file_name("meeting.wav");
+            let mut form = reqwest::multipart::Form::new()
+                .text("model", model.to_string())
+                .text("response_format", "verbose_json")
+                .part("file", file);
+            if !language.trim().is_empty() {
+                form = form.text("language", language.trim().to_string());
+            }
+            match self
+                .client
+                .post("https://api.groq.com/openai/v1/audio/transcriptions")
+                .bearer_auth(key)
+                .multipart(form)
+                .send()
+                .await
+            {
+                Ok(result) if result.status().is_success() => {
+                    response = Some(result);
+                    break;
+                }
+                Ok(result) => {
+                    let status = result.status();
+                    let body = result.text().await.unwrap_or_default();
+                    last_error = Some(anyhow::anyhow!(
+                        "Transcription request failed with status {}: {}",
+                        status,
+                        body
+                    ));
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
         }
-        let response = self
-            .client
-            .post("https://api.groq.com/openai/v1/audio/transcriptions")
-            .bearer_auth(&self.api_key)
-            .multipart(form)
-            .send()
-            .await?;
+        let response = match response {
+            Some(response) => response,
+            None => {
+                return Err(
+                    last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured"))
+                )
+            }
+        };
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
@@ -109,19 +144,41 @@ impl GroqClient {
             }),
         };
 
-        let response = self
-            .client
-            .post(GROQ_API_URL)
-            .bearer_auth(&self.api_key)
-            .json(&req_body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            bail!("API request failed with status {}: {}", status, body);
+        let mut last_error = None;
+        let mut response = None;
+        for key in &self.api_keys {
+            match self
+                .client
+                .post(GROQ_API_URL)
+                .bearer_auth(key)
+                .json(&req_body)
+                .send()
+                .await
+            {
+                Ok(result) if result.status().is_success() => {
+                    response = Some(result);
+                    break;
+                }
+                Ok(result) => {
+                    let status = result.status();
+                    let body = result.text().await.unwrap_or_default();
+                    last_error = Some(anyhow::anyhow!(
+                        "API request failed with status {}: {}",
+                        status,
+                        body
+                    ));
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
         }
+        let response = match response {
+            Some(response) => response,
+            None => {
+                return Err(
+                    last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured"))
+                )
+            }
+        };
 
         let mut stream = response.bytes_stream();
 

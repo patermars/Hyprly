@@ -82,7 +82,7 @@ This builds and installs the `hyprly-git` package, including its application lau
 
 ## Pair your phone
 
-1. Enter your Groq API key in the desktop app, then select **Save key** and **Connect**.
+1. Enter up to three Groq API keys in the desktop app, then select **Save key** and **Connect**. Hyprly tries the next key when a request fails or times out.
 2. On your phone, scan the QR code or open the setup URL shown in the app.
 3. Follow the setup page to install Hyprly’s local CA certificate. Check its fingerprint against the one shown on the desktop.
 4. Open the secure pairing link and enter the six-digit code if prompted.

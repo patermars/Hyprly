@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{env, fs, io::Write, path::PathBuf};
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct Config {
     #[serde(default)]
     pub api: ApiConfig,
@@ -12,7 +12,7 @@ pub struct Config {
     pub context: ContextConfig,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ContextConfig {
     #[serde(default)]
     pub files: Vec<String>,
@@ -33,7 +33,7 @@ fn default_context_max_chars() -> usize {
     24_000
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ApiConfig {
     #[serde(default = "default_model")]
     pub model: String,
@@ -41,6 +41,8 @@ pub struct ApiConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub api_keys: Vec<String>,
 }
 
 impl Default for ApiConfig {
@@ -49,11 +51,12 @@ impl Default for ApiConfig {
             model: default_model(),
             max_tokens: default_max_tokens(),
             api_key: String::new(),
+            api_keys: Vec::new(),
         }
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AudioConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -153,6 +156,25 @@ impl Config {
             .join("hyprly/config.toml")
     }
 
+    pub fn save_config_text(contents: &str) -> anyhow::Result<()> {
+        // Reject malformed or structurally invalid configuration before replacing the file.
+        let _: Self = toml::from_str(contents)?;
+        let path = Self::config_path();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path();
         let mut config = if path.exists() {
@@ -165,6 +187,17 @@ impl Config {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
+        }
+        if config.api.api_keys.is_empty() && !config.api.api_key.trim().is_empty() {
+            config
+                .api
+                .api_keys
+                .push(config.api.api_key.trim().to_string());
+        }
+        config.api.api_keys.retain(|key| !key.trim().is_empty());
+        config.api.api_keys.truncate(3);
+        if let Some(first) = config.api.api_keys.first() {
+            config.api.api_key = first.clone();
         }
         config.audio.chunk_seconds = config.audio.chunk_seconds.clamp(2, 4);
         config.audio.min_utterance_seconds = config.audio.min_utterance_seconds.clamp(1, 4);
@@ -180,7 +213,7 @@ impl Config {
         Ok(config)
     }
 
-    pub fn save_api_key(api_key: &str) -> anyhow::Result<()> {
+    pub fn save_api_keys(api_keys: &[String]) -> anyhow::Result<()> {
         let path = Self::config_path();
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         fs::create_dir_all(parent)?;
@@ -197,7 +230,14 @@ impl Config {
         let api = document["api"]
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("The [api] config section must be a TOML table"))?;
-        api["api_key"] = toml_edit::value(api_key.trim());
+        let keys: Vec<String> = api_keys
+            .iter()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .take(3)
+            .collect();
+        api["api_key"] = toml_edit::value(keys.first().cloned().unwrap_or_default());
+        api["api_keys"] = toml_edit::value(toml_edit::Array::from_iter(keys.iter().cloned()));
 
         if !document.contains_key("audio") {
             document["audio"] = toml_edit::Item::Table(toml_edit::Table::new());

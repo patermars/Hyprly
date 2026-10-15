@@ -107,6 +107,7 @@ struct AppState {
     application: gtk::Application,
     window: gtk::ApplicationWindow,
     api_key: gtk::Entry,
+    backup_keys: Vec<gtk::Entry>,
     status: gtk::Label,
     code: gtk::Label,
     setup_url: gtk::LinkButton,
@@ -186,12 +187,18 @@ fn build_window(application: &gtk::Application) {
     brand_text.append(&wordmark);
     brand_text.append(&subtitle);
     header.append(&brand_text);
+    let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    header_actions.set_halign(gtk::Align::End);
+    let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
+    settings_button.set_tooltip_text(Some("Edit config.toml settings"));
+    settings_button.add_css_class("flat");
+    header_actions.append(&settings_button);
     let theme_picker = gtk::DropDown::from_strings(&["Midnight", "Paper", "Aurora"]);
     theme_picker.add_css_class("theme-picker");
     theme_picker.set_tooltip_text(Some("Choose appearance"));
-    theme_picker.set_halign(gtk::Align::End);
     theme_picker.set_valign(gtk::Align::Start);
-    header.append(&theme_picker);
+    header_actions.append(&theme_picker);
+    header.append(&header_actions);
     root.append(&header);
 
     let columns = gtk::Grid::new();
@@ -210,8 +217,39 @@ fn build_window(application: &gtk::Application) {
     let show_key = gtk::Button::with_label("Show");
     key_row.append(&show_key);
     setup_card.append(&key_row);
+    let mut backup_keys = Vec::new();
+    for index in 2..=3 {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let entry = gtk::Entry::builder()
+            .placeholder_text(&format!("Backup key {index} (optional)"))
+            .visibility(false)
+            .hexpand(true)
+            .build();
+        row.append(&entry);
+        let show = gtk::Button::with_label("Show");
+        let visible = Rc::new(std::cell::Cell::new(false));
+        show.connect_clicked({
+            let entry = entry.clone();
+            let visible = visible.clone();
+            move |button| {
+                let next = !visible.get();
+                visible.set(next);
+                entry.set_visibility(next);
+                button.set_label(if next { "Hide" } else { "Show" });
+            }
+        });
+        row.append(&show);
+        setup_card.append(&row);
+        backup_keys.push(entry);
+    }
+    let failover_note = gtk::Label::new(Some(
+        "If a request fails or times out, Hyprly tries the next saved key.",
+    ));
+    failover_note.add_css_class("muted");
+    failover_note.set_xalign(0.0);
+    setup_card.append(&failover_note);
 
-    let key_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let key_actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let save_key = gtk::Button::with_label("Save key");
     let test_key = gtk::Button::with_label("Test Groq API");
     key_actions.append(&save_key);
@@ -223,7 +261,7 @@ fn build_window(application: &gtk::Application) {
     setup_card.append(&key_note);
 
     setup_card.append(&section_heading("System checks"));
-    let checks = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let checks = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     checks.set_homogeneous(true);
     let test_audio = gtk::Button::with_label("Test PipeWire audio");
     let test_uploads = gtk::Button::with_label("Check PDF / DOCX tools");
@@ -327,6 +365,7 @@ fn build_window(application: &gtk::Application) {
         application: application.clone(),
         window: window.clone(),
         api_key: api_key.clone(),
+        backup_keys: backup_keys.clone(),
         status: status.clone(),
         code: code.clone(),
         setup_url: setup_url.clone(),
@@ -341,6 +380,12 @@ fn build_window(application: &gtk::Application) {
         event_rx,
         tray_rx,
     }));
+
+    settings_button.connect_clicked({
+        let window = window.clone();
+        let status = status.clone();
+        move |_| open_config_editor(&window, &status)
+    });
 
     copy_code.connect_clicked({
         let code = code.clone();
@@ -435,13 +480,16 @@ fn build_window(application: &gtk::Application) {
     });
 
     window.present();
-    let configured_key = crate::config::Config::load()
-        .map(|config| config.api.api_key)
+    let configured_keys = crate::config::Config::load()
+        .map(|config| config.api.api_keys)
         .unwrap_or_default();
-    if configured_key.is_empty() {
+    if configured_keys.is_empty() {
         api_key.grab_focus();
     } else {
-        api_key.set_text(&configured_key);
+        api_key.set_text(&configured_keys[0]);
+        for (entry, key) in backup_keys.iter().zip(configured_keys.iter().skip(1)) {
+            entry.set_text(key);
+        }
         start_backend(&state);
     }
 }
@@ -469,6 +517,408 @@ fn create_wordmark_surface(theme: &str) -> gtk::cairo::ImageSurface {
         source_width as i32 * 4,
     )
     .expect("wordmark image surface can be created")
+}
+
+fn open_config_editor(window: &gtk::ApplicationWindow, status: &gtk::Label) {
+    let config = crate::config::Config::load().unwrap_or_default();
+    let dialog = gtk::Dialog::builder()
+        .title("Hyprly Settings")
+        .transient_for(window)
+        .modal(true)
+        .default_width(980)
+        .default_height(680)
+        .build();
+    let content = dialog.content_area();
+    content.set_spacing(10);
+    content.set_margin_top(20);
+    content.set_margin_bottom(20);
+    content.set_margin_start(24);
+    content.set_margin_end(24);
+    let tabs = gtk::Notebook::new();
+    tabs.set_vexpand(true);
+    let api_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    api_page.set_margin_top(20);
+    api_page.set_margin_bottom(20);
+    api_page.set_margin_start(20);
+    api_page.set_margin_end(20);
+    let (model, chat_model_values) = searchable_dropdown(
+        &[
+            (
+                "GPT OSS 20B · fast and capable".into(),
+                "openai/gpt-oss-20b".into(),
+            ),
+            (
+                "GPT OSS 120B · strongest GPT OSS".into(),
+                "openai/gpt-oss-120b".into(),
+            ),
+            (
+                "Llama 3.3 70B · general purpose".into(),
+                "llama-3.3-70b-versatile".into(),
+            ),
+            (
+                "Llama 3.1 8B · lightweight".into(),
+                "llama-3.1-8b-instant".into(),
+            ),
+            (
+                "Groq Compound · built-in tools".into(),
+                "groq/compound".into(),
+            ),
+            (
+                "Groq Compound Mini · faster built-in tools".into(),
+                "groq/compound-mini".into(),
+            ),
+        ],
+        &config.api.model,
+    );
+    let max_tokens = gtk::SpinButton::with_range(1.0, 32768.0, 128.0);
+    max_tokens.set_value(config.api.max_tokens as f64);
+    api_page.append(&section_heading("AI response"));
+    api_page.append(&settings_row("Chat model", "The Groq model that writes answers. Leave the current value unless you know which model you want.", &model));
+    api_page.append(&settings_row("Answer length", "The maximum size of an AI answer. Higher values allow longer replies and use more of your quota.", &max_tokens));
+
+    let audio_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    audio_page.set_margin_top(20);
+    audio_page.set_margin_bottom(20);
+    audio_page.set_margin_start(20);
+    audio_page.set_margin_end(20);
+    let audio_enabled = gtk::Switch::new();
+    audio_enabled.set_active(config.audio.enabled);
+    audio_page.append(&section_heading("Audio capture"));
+    audio_page.append(&settings_row("Enable audio capture", "Turn this on to capture meeting audio for transcription. Changes apply after reconnecting.", &audio_enabled));
+    let sources = available_audio_sources();
+    let (audio_source, audio_source_values) = searchable_dropdown(&sources, &config.audio.source);
+    audio_page.append(&settings_row(
+        "Audio source",
+        "Leave blank to use the system’s default audio. Otherwise enter the PipeWire source name.",
+        &audio_source,
+    ));
+    let chunk_seconds = gtk::SpinButton::with_range(2.0, 4.0, 1.0);
+    chunk_seconds.set_value(config.audio.chunk_seconds as f64);
+    audio_page.append(&settings_row(
+        "Capture chunk",
+        "How often Hyprly collects a small audio segment. Shorter segments can respond sooner.",
+        &chunk_seconds,
+    ));
+    let min_utterance = gtk::SpinButton::with_range(1.0, 4.0, 1.0);
+    min_utterance.set_value(config.audio.min_utterance_seconds as f64);
+    audio_page.append(&settings_row(
+        "Minimum speech",
+        "Ignore speech shorter than this, which helps filter out brief background sounds.",
+        &min_utterance,
+    ));
+    let max_utterance = gtk::SpinButton::with_range(1.0, 15.0, 1.0);
+    max_utterance.set_value(config.audio.max_utterance_seconds as f64);
+    audio_page.append(&settings_row(
+        "Maximum speech",
+        "Maximum length of one spoken segment before it is sent for transcription.",
+        &max_utterance,
+    ));
+    let (transcription_model, transcription_model_values) = searchable_dropdown(
+        &[
+            (
+                "Whisper Large V3 Turbo · faster, lower cost".into(),
+                "whisper-large-v3-turbo".into(),
+            ),
+            (
+                "Whisper Large V3 · prioritize accuracy".into(),
+                "whisper-large-v3".into(),
+            ),
+        ],
+        &config.audio.transcription_model,
+    );
+    audio_page.append(&settings_row(
+        "Transcription model",
+        "The Groq model that turns captured audio into text.",
+        &transcription_model,
+    ));
+    let concurrency = gtk::SpinButton::with_range(1.0, 4.0, 1.0);
+    concurrency.set_value(config.audio.max_concurrent_transcriptions as f64);
+    audio_page.append(&settings_row(
+        "Simultaneous transcriptions",
+        "How many audio segments can be transcribed at once. Higher values may use more quota.",
+        &concurrency,
+    ));
+    let language_options = [
+        ("Auto detect · recommended".into(), "".into()),
+        ("English".into(), "en".into()),
+        ("Hindi".into(), "hi".into()),
+        ("Spanish".into(), "es".into()),
+        ("French".into(), "fr".into()),
+        ("German".into(), "de".into()),
+        ("Italian".into(), "it".into()),
+        ("Portuguese".into(), "pt".into()),
+        ("Japanese".into(), "ja".into()),
+        ("Korean".into(), "ko".into()),
+        ("Chinese".into(), "zh".into()),
+        ("Arabic".into(), "ar".into()),
+        ("Bengali".into(), "bn".into()),
+        ("Dutch".into(), "nl".into()),
+        ("Russian".into(), "ru".into()),
+        ("Turkish".into(), "tr".into()),
+        ("Urdu".into(), "ur".into()),
+        ("Tamil".into(), "ta".into()),
+        ("Telugu".into(), "te".into()),
+        ("Marathi".into(), "mr".into()),
+        ("Indonesian".into(), "id".into()),
+    ];
+    let (language, language_values) =
+        searchable_dropdown(&language_options, &config.audio.language);
+    audio_page.append(&settings_row(
+        "Audio language",
+        "Language spoken in the meeting, using a short language code such as en.",
+        &language,
+    ));
+    let vad = gtk::Switch::new();
+    vad.set_active(config.audio.vad_enabled);
+    audio_page.append(&settings_row(
+        "Detect when someone is speaking",
+        "Skip quiet segments so silence is not sent for transcription.",
+        &vad,
+    ));
+    let silence_threshold = gtk::SpinButton::with_range(0.0, 1.0, 0.01);
+    silence_threshold.set_digits(2);
+    silence_threshold.set_value(config.audio.silence_threshold as f64);
+    audio_page.append(&settings_row(
+        "Silence sensitivity",
+        "Audio quieter than this level is treated as silence. Lower values detect quieter speech.",
+        &silence_threshold,
+    ));
+    let endpoint_silence = gtk::SpinButton::with_range(800.0, 1500.0, 50.0);
+    endpoint_silence.set_value(config.audio.endpoint_silence_ms as f64);
+    audio_page.append(&settings_row(
+        "Pause before finishing speech",
+        "How long a pause (in milliseconds) ends the current spoken segment.",
+        &endpoint_silence,
+    ));
+    let debounce = gtk::SpinButton::with_range(150.0, 700.0, 50.0);
+    debounce.set_value(config.audio.debounce_ms as f64);
+    audio_page.append(&settings_row("Wait before answering", "Briefly waits after speech changes before asking AI to respond, reducing repeated updates.", &debounce));
+    let filler_filter = gtk::Switch::new();
+    filler_filter.set_active(config.audio.filler_filter);
+    audio_page.append(&settings_row(
+        "Clean up spoken text",
+        "Remove common filler words and repeated or unfinished phrases from transcription.",
+        &filler_filter,
+    ));
+    let confidence = gtk::SpinButton::with_range(0.0, 1.0, 0.05);
+    confidence.set_digits(2);
+    confidence.set_value(config.audio.confidence_threshold as f64);
+    audio_page.append(&settings_row(
+        "Ignore uncertain transcripts",
+        "Only accept transcriptions at or above this confidence. Set to zero to keep all results.",
+        &confidence,
+    ));
+
+    let context_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    context_page.set_margin_top(20);
+    context_page.set_margin_bottom(20);
+    context_page.set_margin_start(20);
+    context_page.set_margin_end(20);
+    context_page.append(&section_heading("Reference context"));
+    context_page.append(&gtk::Label::new(Some(
+        "Add one file path per line. These files are loaded locally and included as AI context.",
+    )));
+    let context_files = gtk::TextView::new();
+    context_files.set_monospace(true);
+    context_files.set_wrap_mode(gtk::WrapMode::WordChar);
+    context_files.set_top_margin(12);
+    context_files.set_bottom_margin(12);
+    context_files.set_left_margin(12);
+    context_files.set_right_margin(12);
+    context_files
+        .buffer()
+        .set_text(&config.context.files.join("\n"));
+    let files_scroll = gtk::ScrolledWindow::builder()
+        .min_content_height(150)
+        .vexpand(true)
+        .child(&context_files)
+        .build();
+    context_page.append(&files_scroll);
+    let max_context = gtk::SpinButton::with_range(1000.0, 100000.0, 1000.0);
+    max_context.set_value(config.context.max_chars as f64);
+    context_page.append(&settings_row(
+        "Maximum reference text",
+        "Limits how much text is read from your reference files and shared with the AI.",
+        &max_context,
+    ));
+    tabs.append_page(&api_page, Some(&gtk::Label::new(Some("AI"))));
+    tabs.append_page(&audio_page, Some(&gtk::Label::new(Some("Audio"))));
+    tabs.append_page(&context_page, Some(&gtk::Label::new(Some("Context"))));
+    let scroller = gtk::ScrolledWindow::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .child(&tabs)
+        .build();
+    content.append(&scroller);
+    let hint = gtk::Label::new(Some(
+        "Changes are written to config.toml. Restart the connection to apply backend changes.",
+    ));
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    hint.add_css_class("muted");
+    content.append(&hint);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    actions.set_halign(gtk::Align::End);
+    let cancel = gtk::Button::with_label("Cancel");
+    let save = gtk::Button::with_label("Save settings");
+    save.add_css_class("suggested-action");
+    actions.append(&cancel);
+    actions.append(&save);
+    content.append(&actions);
+    cancel.connect_clicked({
+        let dialog = dialog.clone();
+        move |_| dialog.response(gtk::ResponseType::Cancel)
+    });
+    save.connect_clicked({
+        let dialog = dialog.clone();
+        move |_| dialog.response(gtk::ResponseType::Accept)
+    });
+    dialog.connect_response({
+        let dialog = dialog.clone();
+        let status = status.clone();
+        move |_, response| {
+            if response == gtk::ResponseType::Accept {
+                let mut updated = config.clone();
+                updated.api.model = selected_dropdown_value(&model, &chat_model_values);
+                updated.api.max_tokens = max_tokens.value_as_int().max(1) as u32;
+                updated.audio.enabled = audio_enabled.is_active();
+                updated.audio.source = selected_dropdown_value(&audio_source, &audio_source_values);
+                updated.audio.chunk_seconds = chunk_seconds.value_as_int() as u32;
+                updated.audio.min_utterance_seconds = min_utterance.value_as_int() as u32;
+                updated.audio.max_utterance_seconds = max_utterance
+                    .value_as_int()
+                    .max(updated.audio.min_utterance_seconds as i32)
+                    as u32;
+                updated.audio.transcription_model =
+                    selected_dropdown_value(&transcription_model, &transcription_model_values);
+                updated.audio.max_concurrent_transcriptions = concurrency.value_as_int() as usize;
+                updated.audio.language = selected_dropdown_value(&language, &language_values);
+                updated.audio.vad_enabled = vad.is_active();
+                updated.audio.silence_threshold = silence_threshold.value() as f32;
+                updated.audio.endpoint_silence_ms = endpoint_silence.value_as_int() as u64;
+                updated.audio.debounce_ms = debounce.value_as_int() as u64;
+                updated.audio.filler_filter = filler_filter.is_active();
+                updated.audio.confidence_threshold = confidence.value() as f32;
+                let files_buffer = context_files.buffer();
+                let files =
+                    files_buffer.text(&files_buffer.start_iter(), &files_buffer.end_iter(), true);
+                updated.context.files = files
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                updated.context.max_chars = max_context.value_as_int().max(1000) as usize;
+                let result = toml::to_string_pretty(&updated)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|serialized| crate::config::Config::save_config_text(&serialized));
+                match result {
+                    Ok(()) => status.set_text(
+                        "Settings saved. Restart the connection to apply backend changes.",
+                    ),
+                    Err(error) => {
+                        status.set_text(&format!("Could not save settings: {error}"));
+                        return;
+                    }
+                }
+            }
+            dialog.close();
+        }
+    });
+    dialog.present();
+}
+
+fn settings_row(label: &str, description: &str, control: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_valign(gtk::Align::Center);
+    let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let title = gtk::Label::new(Some(label));
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+    title.set_hexpand(true);
+    title.add_css_class("heading");
+    let help = gtk::Label::new(Some(description));
+    help.set_xalign(0.0);
+    help.set_wrap(true);
+    help.set_hexpand(true);
+    help.add_css_class("muted");
+    copy.append(&title);
+    copy.append(&help);
+    copy.set_hexpand(true);
+    row.append(&copy);
+    row.append(control);
+    row
+}
+
+fn searchable_dropdown(
+    options: &[(String, String)],
+    current: &str,
+) -> (gtk::DropDown, Vec<String>) {
+    let mut choices = options.to_vec();
+    if !choices.iter().any(|(_, value)| value == current) {
+        let label = if current.is_empty() {
+            "Auto detect".to_string()
+        } else {
+            format!("Current setting · {current}")
+        };
+        choices.push((label, current.to_string()));
+    }
+    let labels = gtk::StringList::new(&[]);
+    let mut values = Vec::with_capacity(choices.len());
+    let mut selected = 0;
+    for (index, (label, value)) in choices.into_iter().enumerate() {
+        labels.append(&label);
+        if value == current {
+            selected = index as u32;
+        }
+        values.push(value);
+    }
+    let dropdown = gtk::DropDown::new(Some(labels), None::<gtk::Expression>);
+    dropdown.set_enable_search(true);
+    dropdown.set_hexpand(true);
+    dropdown.set_selected(selected);
+    (dropdown, values)
+}
+
+fn selected_dropdown_value(dropdown: &gtk::DropDown, values: &[String]) -> String {
+    values
+        .get(dropdown.selected() as usize)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn available_audio_sources() -> Vec<(String, String)> {
+    let mut choices = vec![("Default system audio output".to_string(), String::new())];
+    let Ok(output) = Command::new("wpctl").args(["status", "-n"]).output() else {
+        return choices;
+    };
+    if !output.status.success() {
+        return choices;
+    }
+    let mut in_sinks = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.contains("Sinks:") {
+            in_sinks = true;
+            continue;
+        }
+        if line.contains("Sources:") {
+            break;
+        }
+        if !in_sinks {
+            continue;
+        }
+        let clean = line.replace('*', " ");
+        let Some((node_id, name)) = clean.trim().split_once('.') else {
+            continue;
+        };
+        let node_id = node_id.trim().trim_matches(|ch: char| !ch.is_ascii_digit());
+        let name = name.trim();
+        if !node_id.is_empty() && node_id.chars().all(|ch| ch.is_ascii_digit()) && !name.is_empty()
+        {
+            choices.push((format!("{name} · {node_id}"), node_id.to_string()));
+        }
+    }
+    choices
 }
 
 fn decode_png(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
@@ -557,9 +1007,11 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
       .wordmark {{ background: transparent; }}
       .card {{ background: {surface}; border: 1px solid {border}; border-radius: 18px; padding: 20px; }}
       .card > label.heading {{ color: {text}; font-size: 15px; font-weight: 700; padding-bottom: 7px; border-bottom: 1px solid {border}; }}
-      entry {{ color: {text}; background: {input}; border: 1px solid {border}; border-radius: 10px; min-height: 38px; }}
+      entry {{ color: {text}; background: {input}; border: 1px solid {border}; border-radius: 10px; min-height: 38px; padding: 8px 12px; }}
       entry:focus {{ border-color: {accent}; box-shadow: 0 0 0 2px alpha({accent}, .22); }}
-      button, dropdown > button {{ color: {text}; background: {raised}; border: 1px solid {border}; border-radius: 10px; padding: 8px 12px; }}
+      button, dropdown > button {{ color: {text}; background: {raised}; border: 1px solid {border}; border-radius: 10px; padding: 12px 16px; }}
+      spinbutton {{ padding: 8px 12px; }}
+      spinbutton button {{ margin: 3px; padding: 5px 8px; }}
       button:hover {{ border-color: {accent}; }}
       button.suggested-action {{ color: {dark_ink}; background: {accent}; border-color: {accent}; font-weight: 700; }}
       .theme-picker {{ min-width: 125px; }}
@@ -607,8 +1059,15 @@ fn save_gui_theme(theme: &str) {
 
 fn save_current_key(state: &Rc<std::cell::RefCell<AppState>>) {
     let state_ref = state.borrow();
-    let key = state_ref.api_key.text();
-    match crate::config::Config::save_api_key(&key) {
+    let keys = std::iter::once(state_ref.api_key.text().to_string())
+        .chain(
+            state_ref
+                .backup_keys
+                .iter()
+                .map(|entry| entry.text().to_string()),
+        )
+        .collect::<Vec<_>>();
+    match crate::config::Config::save_api_keys(&keys) {
         Ok(()) => state_ref
             .status
             .set_text("API key saved in your private Hyprly config."),
@@ -622,15 +1081,25 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     if state.borrow().child.is_some() {
         return;
     }
-    let key = state.borrow().api_key.text().to_string();
-    if key.trim().is_empty() {
+    let keys = {
+        let state = state.borrow();
+        std::iter::once(state.api_key.text().to_string())
+            .chain(
+                state
+                    .backup_keys
+                    .iter()
+                    .map(|entry| entry.text().to_string()),
+            )
+            .collect::<Vec<_>>()
+    };
+    if keys.iter().all(|key| key.trim().is_empty()) {
         state
             .borrow()
             .status
             .set_text("Add your Groq API key first.");
         return;
     }
-    if let Err(error) = crate::config::Config::save_api_key(&key) {
+    if let Err(error) = crate::config::Config::save_api_keys(&keys) {
         state
             .borrow()
             .status
@@ -817,8 +1286,19 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
 }
 
 fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
-    let key = state.borrow().api_key.text().to_string();
-    if key.trim().is_empty() {
+    let keys = {
+        let state = state.borrow();
+        std::iter::once(state.api_key.text().to_string())
+            .chain(
+                state
+                    .backup_keys
+                    .iter()
+                    .map(|entry| entry.text().to_string()),
+            )
+            .filter(|key| !key.trim().is_empty())
+            .collect::<Vec<_>>()
+    };
+    if keys.is_empty() {
         state
             .borrow()
             .status
@@ -837,18 +1317,26 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                     let client = reqwest::Client::builder()
                         .timeout(Duration::from_secs(12))
                         .build()?;
-                    let response = client
-                        .get("https://api.groq.com/openai/v1/models")
-                        .bearer_auth(key.trim())
-                        .send()
-                        .await?;
-                    if response.status().is_success() {
-                        Ok("Groq API key works.".to_string())
-                    } else {
-                        let status = response.status();
-                        let body = response.text().await.unwrap_or_default();
-                        anyhow::bail!("Groq API returned HTTP {status}: {body}");
+                    let mut failures = Vec::new();
+                    for (index, key) in keys.iter().enumerate() {
+                        match client
+                            .get("https://api.groq.com/openai/v1/models")
+                            .bearer_auth(key.trim())
+                            .send()
+                            .await
+                        {
+                            Ok(response) if response.status().is_success() => {
+                                return Ok(format!("Groq key {} works.", index + 1))
+                            }
+                            Ok(response) => failures.push(format!(
+                                "Key {}: HTTP {}",
+                                index + 1,
+                                response.status()
+                            )),
+                            Err(error) => failures.push(format!("Key {}: {error}", index + 1)),
+                        }
                     }
+                    anyhow::bail!("All Groq keys failed. {}", failures.join("; "));
                 })
             });
         let message = match result {

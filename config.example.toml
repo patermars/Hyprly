@@ -1,6 +1,7 @@
 [api]
 provider = "groq"
 api_key = "" # Prefer GROQ_API_KEY in the environment.
+api_keys = [] # Up to 3 keys; requests try them in order when a key fails.
 model = "openai/gpt-oss-20b"
 stream = true
 max_tokens = 1024
