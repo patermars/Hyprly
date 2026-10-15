@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo_text_white.png">
-  <img src="assets/logo_text.png" alt="Hyprly" width="360">
+  <img src="assets/logo_text_white.png" alt="Hyprly" width="360">
 </picture>
 
 ### Private meeting audio, with answers on your phone.
@@ -16,7 +16,7 @@
 Hyprly is a Linux desktop app that captures meeting audio through PipeWire, transcribes it with Groq Whisper, and streams AI answers to a phone browser. Audio is processed in memory and is not saved to disk.
 
 <p align="center">
-  <img src="assets/hyprly-desktop.png" alt="Hyprly desktop app showing API setup, system checks, and phone pairing" width="100%">
+  <img src="assets/hyprly-suite.png" alt="Hyprly desktop app showing API setup, system checks, and phone pairing" width="100%">
 </p>
 
 ## How it works
@@ -65,8 +65,6 @@ This runs Hyprly from the project directory; it does not install it system-wide.
 The desktop app also provides PipeWire and optional PDF/DOCX tool checks. Closing the window keeps Hyprly available from the system tray.
 
 ## Clone history
-
-The scheduled GitHub Actions workflow collects clone traffic and updates this graph:
 
 ![Hyprly clone history](assets/repo-growth-clones.svg)
 
