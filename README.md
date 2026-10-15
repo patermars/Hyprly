@@ -76,10 +76,10 @@ cargo run --release
 To install it as a native Arch package, run this from the project root:
 
 ```bash
-makepkg -si
+./install-arch.sh
 ```
 
-This builds and installs the `hyprly-git` package, including its application launcher and icon. Prebuilt packages and release archives, when available, are listed on [GitHub Releases](https://github.com/patermars/Hyprly/releases).
+This builds and installs the `hyprly-git` package, including its application launcher and icon. The helper keeps makepkg's build checkout and Git cache under `~/.cache/hyprly/makepkg`, away from the project's own `src/` directory. Prebuilt packages and release archives, when available, are listed on [GitHub Releases](https://github.com/patermars/Hyprly/releases).
 
 ## Pair your phone
 

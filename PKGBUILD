@@ -1,8 +1,14 @@
+if [[ -n ${startdir:-} && -n ${BUILDDIR:-} && "$BUILDDIR" -ef "$startdir" && -f "$startdir/src/main.rs" ]]; then
+    printf '%s\n' "Error: run ./install-arch.sh from the repository root; makepkg's default srcdir would overlap the project's src/ directory." >&2
+    exit 1
+fi
+
 pkgname=hyprly-git
-pkgver=1.0.r3.g9d5a8f1
+pkgver=2.0.1.r0.g3b2affe
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')
+options=('!lto')
 url='https://github.com/patermars/hyprly'
 license=('MIT')
 provides=('hyprly')

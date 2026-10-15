@@ -10,12 +10,14 @@ mod screen;
 mod topic;
 mod transcript;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use std::{env, fs, os::unix::fs::PermissionsExt};
+use std::process::Command;
 use tokio::runtime::Runtime;
 
 #[derive(Parser)]
-#[command(name = "hyprly", about = "GTK4 AI meeting assistant")]
+#[command(name = "hyprly", about = "GTK4 AI meeting assistant", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -27,6 +29,25 @@ enum Commands {
     Daemon,
     /// Ask Groq to solve the main question visible on the current screen.
     AskScreen,
+    /// Print the Hyprly version.
+    Version,
+    /// Inspect Hyprly configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+    /// Check configuration and desktop dependencies.
+    Doctor,
+    /// Show PipeWire devices reported by WirePlumber.
+    AudioSources,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Print the configuration file path.
+    Path,
+    /// Print configuration with API keys redacted.
+    Show,
 }
 
 fn main() -> Result<()> {
@@ -37,9 +58,83 @@ fn main() -> Result<()> {
             let answer = Runtime::new()?.block_on(screen::ask_screen())?;
             println!("{answer}");
         }
+        Some(Commands::Version) => println!("hyprly {}", env!("CARGO_PKG_VERSION")),
+        Some(Commands::Config { command }) => match command {
+            ConfigCommands::Path => {
+                println!("{}", config::Config::config_path().display());
+                Ok(())
+            }
+            ConfigCommands::Show => print_config(),
+        }?,
+        Some(Commands::Doctor) => run_doctor()?,
+        Some(Commands::AudioSources) => list_audio_devices()?,
         None => gui::run(),
     }
     Ok(())
+}
+
+fn print_config() -> Result<()> {
+    let mut config = config::Config::load()?;
+    let configured_key_count = config.api.api_keys.len();
+    let has_key = !config.api.api_key.is_empty() || configured_key_count > 0;
+    config.api.api_key = if has_key { "<redacted>".into() } else { String::new() };
+    config.api.api_keys = vec!["<redacted>".into(); configured_key_count];
+    print!("{}", toml::to_string_pretty(&config)?);
+    Ok(())
+}
+
+fn run_doctor() -> Result<()> {
+    let config_path = config::Config::config_path();
+    let config = config::Config::load().context("Could not load Hyprly configuration")?;
+    let has_api_key = !config.api.api_keys.is_empty();
+    let wpctl_available = executable_in_path("wpctl");
+    let pipewire_ready = wpctl_available
+        && Command::new("wpctl")
+            .args(["status", "-n"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+    let grim_available = executable_in_path("grim");
+
+    println!("Configuration: {}", config_path.display());
+    print_check("Groq API key", has_api_key, "not configured");
+    print_check("PipeWire session", pipewire_ready, "wpctl could not query PipeWire");
+    print_check("grim screenshot tool", grim_available, "not installed (screen questions need it)");
+
+    if !has_api_key || !pipewire_ready {
+        bail!("Hyprly is missing a required setting or audio service; see the checks above.");
+    }
+    Ok(())
+}
+
+fn list_audio_devices() -> Result<()> {
+    let output = Command::new("wpctl")
+        .args(["status", "-n"])
+        .output()
+        .context("Could not run wpctl. Install WirePlumber and start the PipeWire user session.")?;
+    if !output.status.success() {
+        bail!("wpctl could not query the PipeWire session");
+    }
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+fn executable_in_path(name: &str) -> bool {
+    env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|directory| directory.join(name))
+        .any(|candidate| {
+            fs::metadata(candidate)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        })
+}
+
+fn print_check(label: &str, ok: bool, detail: &str) {
+    if ok {
+        println!("[OK]   {label}");
+    } else {
+        println!("[FAIL] {label}: {detail}");
+    }
 }
 
 fn run_daemon() -> Result<()> {

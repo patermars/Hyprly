@@ -2,7 +2,7 @@
 Type=Application
 Name=Hyprly
 Comment=AI meeting assistant with a phone companion
-Exec=hyprly
+Exec=/usr/bin/hyprly
 Icon=logo
 Terminal=false
 Categories=AudioVideo;Audio;Utility;
