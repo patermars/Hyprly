@@ -22,7 +22,7 @@ jobs:
       - name: Update clone history chart
         uses: MacRimi/repo-growth@v1
         with:
-          title: Hyprly clone history
+          title: ""
           metrics: clones
           layout: separate
           output: assets/repo-growth.svg
