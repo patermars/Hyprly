@@ -2,18 +2,8 @@
 
 <br />
 
-<img src="assets/logo_text.png" alt="Hyprly" width="420">
+<img src="assets/logo_text_white.png" alt="Hyprly" width="420">
 
-<br />
-
-```
-██╗  ██╗██╗   ██╗██████╗ ██████╗ ██╗  ██╗   ██╗
-██║  ██║╚██╗ ██╔╝██╔══██╗██╔══██╗██║  ╚██╗ ██╔╝
-███████║ ╚████╔╝ ██████╔╝██████╔╝██║   ╚████╔╝ 
-██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══██╗██║    ╚██╔╝  
-██║  ██║   ██║   ██║     ██║  ██║███████╗██║   
-╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝   
-```
 
 **Open-source Cluely for Linux.**  
 Your computer listens. Your phone shows the answers. Nobody sees a thing.
