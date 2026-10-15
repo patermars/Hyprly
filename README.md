@@ -38,22 +38,47 @@ Hyprly is a Linux desktop app that captures meeting audio through PipeWire, tran
 
 ## Requirements
 
-- Linux, GTK4, PipeWire, and WirePlumber
-- Rust and Cargo to build from source
+- Linux with GTK4, PipeWire, and WirePlumber
+- Rust and Cargo to build from source (Cargo is included with Rust)
 - A [Groq API key](https://console.groq.com/keys)
 - A phone browser on the same local network
 
-For an Ubuntu or Debian build environment, install `libgtk-4-dev`, `libssl-dev`, and `pkg-config`. On Arch Linux, install `gtk4`, `openssl`, and `pkgconf`.
+Install the dependencies and build tools with your distribution's package manager:
+
+**Arch Linux**
+
+```bash
+sudo pacman -S --needed base-devel git gtk4 pipewire wireplumber rust openssl pkgconf
+```
+
+**Debian / Ubuntu**
+
+```bash
+sudo apt update
+sudo apt install build-essential git libgtk-4-dev libssl-dev pkg-config pipewire wireplumber rustc cargo
+```
 
 ## Build and run
+
 
 ```bash
 git clone https://github.com/patermars/Hyprly.git
 cd Hyprly
+```
+To build and temporarily run Hyprly from the project directory:
+```bash
 cargo run --release
 ```
 
-This runs Hyprly from the project directory; it does not install it system-wide. Prebuilt packages and release archives, when available, are listed on [GitHub Releases](https://github.com/patermars/Hyprly/releases).
+`cargo run --release` does not install Hyprly. 
+
+To install it as a native Arch package, run this from the project root:
+
+```bash
+makepkg -si
+```
+
+This builds and installs the `hyprly-git` package, including its application launcher and icon. Prebuilt packages and release archives, when available, are listed on [GitHub Releases](https://github.com/patermars/Hyprly/releases).
 
 ## Pair your phone
 

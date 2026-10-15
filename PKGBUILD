@@ -1,5 +1,5 @@
 pkgname=hyprly-git
-pkgver=0.1.0
+pkgver=1.0.r3.g9d5a8f1
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')
