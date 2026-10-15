@@ -118,9 +118,30 @@ struct AppState {
     connect_button: gtk::Button,
     disconnect_button: gtk::Button,
     child: Option<Child>,
+    backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
     event_tx: Sender<UiEvent>,
     event_rx: Receiver<UiEvent>,
     tray_rx: Receiver<TrayAction>,
+    mouse_rx: Receiver<crate::input::MousePress>,
+    screen_trigger: Option<crate::config::MouseGesture>,
+    trigger_clicks: Option<ClickSequence>,
+    recording: Option<GestureRecording>,
+    trigger_label: Option<gtk::Label>,
+}
+
+#[derive(Clone, Copy)]
+struct ClickSequence {
+    button: u16,
+    clicks: u8,
+    last_click: std::time::Instant,
+}
+
+struct GestureRecording {
+    label: gtk::Label,
+    candidate: Option<ClickSequence>,
+    deadline: std::time::Instant,
+    ignore_until: std::time::Instant,
+    armed: bool,
 }
 
 pub fn run() {
@@ -134,6 +155,8 @@ pub fn run() {
 fn build_window(application: &gtk::Application) {
     let (event_tx, event_rx) = mpsc::channel();
     let (tray_tx, tray_rx) = mpsc::channel();
+    let (mouse_tx, mouse_rx) = mpsc::channel();
+    crate::input::start(mouse_tx);
     start_tray(tray_tx, event_tx.clone());
 
     let api_key = gtk::Entry::builder()
@@ -361,6 +384,9 @@ fn build_window(application: &gtk::Application) {
         .build();
     window.set_icon_name(Some("logo"));
 
+    let screen_trigger = crate::config::Config::load()
+        .ok()
+        .and_then(|config| config.screen.mouse_gesture);
     let state = Rc::new(std::cell::RefCell::new(AppState {
         application: application.clone(),
         window: window.clone(),
@@ -376,15 +402,20 @@ fn build_window(application: &gtk::Application) {
         connect_button: connect.clone(),
         disconnect_button: disconnect.clone(),
         child: None,
+        backend_stdin: None,
         event_tx,
         event_rx,
         tray_rx,
+        mouse_rx,
+        screen_trigger,
+        trigger_clicks: None,
+        recording: None,
+        trigger_label: None,
     }));
 
     settings_button.connect_clicked({
-        let window = window.clone();
-        let status = status.clone();
-        move |_| open_config_editor(&window, &status)
+        let state = state.clone();
+        move |_| open_config_editor(&state)
     });
 
     copy_code.connect_clicked({
@@ -519,11 +550,19 @@ fn create_wordmark_surface(theme: &str) -> gtk::cairo::ImageSurface {
     .expect("wordmark image surface can be created")
 }
 
-fn open_config_editor(window: &gtk::ApplicationWindow, status: &gtk::Label) {
+fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     let config = crate::config::Config::load().unwrap_or_default();
+    let (window, status, current_trigger) = {
+        let state_ref = state.borrow();
+        (
+            state_ref.window.clone(),
+            state_ref.status.clone(),
+            state_ref.screen_trigger.clone(),
+        )
+    };
     let dialog = gtk::Dialog::builder()
         .title("Hyprly Settings")
-        .transient_for(window)
+        .transient_for(&window)
         .modal(true)
         .default_width(980)
         .default_height(680)
@@ -741,9 +780,87 @@ fn open_config_editor(window: &gtk::ApplicationWindow, status: &gtk::Label) {
         "Limits how much text is read from your reference files and shared with the AI.",
         &max_context,
     ));
+
+    let screen_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    screen_page.set_margin_top(20);
+    screen_page.set_margin_bottom(20);
+    screen_page.set_margin_start(20);
+    screen_page.set_margin_end(20);
+    screen_page.append(&section_heading("Ask about the screen"));
+    screen_page.append(&gtk::Label::new(Some(
+        "Record a mouse gesture once. Hyprly watches for it while running, captures the screen, and sends the image to Groq's vision model to read and answer it.",
+    )));
+    let vision_model = gtk::Entry::builder()
+        .text(&config.screen.vision_model)
+        .hexpand(true)
+        .build();
+    screen_page.append(&settings_row(
+        "Groq vision model",
+        "Default: qwen/qwen3.8-27b. Save settings to apply a different vision-capable Groq model.",
+        &vision_model,
+    ));
+    let trigger_label = gtk::Label::new(Some(
+        &current_trigger
+            .as_ref()
+            .map(describe_gesture)
+            .unwrap_or_else(|| "No gesture recorded".to_string()),
+    ));
+    state.borrow_mut().trigger_label = Some(trigger_label.clone());
+    trigger_label.set_xalign(0.0);
+    trigger_label.set_wrap(true);
+    let gesture_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let record_gesture = gtk::Button::with_label("Record mouse gesture");
+    let clear_gesture = gtk::Button::with_label("Clear");
+    gesture_actions.append(&record_gesture);
+    gesture_actions.append(&clear_gesture);
+    screen_page.append(&settings_row(
+        "Saved trigger",
+        "Click the button, then click the chosen mouse button 1–10 times. Pause briefly to save that pattern.",
+        &trigger_label,
+    ));
+    screen_page.append(&gesture_actions);
+    screen_page.append(&gtk::Label::new(Some(
+        "Screen images are sent to Groq. If recording times out, allow your user to read the mouse device under /dev/input, then restart Hyprly. Only mouse button presses are used; keyboard input is ignored.",
+    )));
+    record_gesture.connect_clicked({
+        let state = state.clone();
+        let trigger_label = trigger_label.clone();
+        let status = status.clone();
+        move |_| {
+            let now = std::time::Instant::now();
+            state.borrow_mut().recording = Some(GestureRecording {
+                label: trigger_label.clone(),
+                candidate: None,
+                deadline: now + Duration::from_secs(10),
+                ignore_until: now + Duration::from_millis(450),
+                armed: false,
+            });
+            trigger_label
+                .set_text("Starting recording… click your chosen button after the prompt changes.");
+            status.set_text("Recording a mouse gesture for 10 seconds.");
+        }
+    });
+    clear_gesture.connect_clicked({
+        let state = state.clone();
+        let trigger_label = trigger_label.clone();
+        let status = status.clone();
+        move |_| match crate::config::Config::save_mouse_gesture(None) {
+            Ok(()) => {
+                let mut state_ref = state.borrow_mut();
+                state_ref.screen_trigger = None;
+                state_ref.trigger_clicks = None;
+                state_ref.recording = None;
+                state_ref.trigger_label = Some(trigger_label.clone());
+                trigger_label.set_text("No gesture recorded");
+                status.set_text("Screen trigger cleared.");
+            }
+            Err(error) => status.set_text(&format!("Could not clear screen trigger: {error}")),
+        }
+    });
     tabs.append_page(&api_page, Some(&gtk::Label::new(Some("AI"))));
     tabs.append_page(&audio_page, Some(&gtk::Label::new(Some("Audio"))));
     tabs.append_page(&context_page, Some(&gtk::Label::new(Some("Context"))));
+    tabs.append_page(&screen_page, Some(&gtk::Label::new(Some("Screen"))));
     let scroller = gtk::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
@@ -776,9 +893,15 @@ fn open_config_editor(window: &gtk::ApplicationWindow, status: &gtk::Label) {
     dialog.connect_response({
         let dialog = dialog.clone();
         let status = status.clone();
+        let state = state.clone();
         move |_, response| {
             if response == gtk::ResponseType::Accept {
                 let mut updated = config.clone();
+                updated.screen.mouse_gesture = state.borrow().screen_trigger.clone();
+                let configured_vision_model = vision_model.text().trim().to_string();
+                if !configured_vision_model.is_empty() {
+                    updated.screen.vision_model = configured_vision_model;
+                }
                 updated.api.model = selected_dropdown_value(&model, &chat_model_values);
                 updated.api.max_tokens = max_tokens.value_as_int().max(1) as u32;
                 updated.audio.enabled = audio_enabled.is_active();
@@ -1119,7 +1242,7 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     };
     let mut child = match Command::new(executable)
         .arg("daemon")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1133,6 +1256,10 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
             return;
         }
     };
+    let backend_stdin = child
+        .stdin
+        .take()
+        .map(|stdin| std::sync::Arc::new(std::sync::Mutex::new(stdin)));
 
     let event_tx = state.borrow().event_tx.clone();
     if let Some(stdout) = child.stdout.take() {
@@ -1183,6 +1310,7 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 
     let mut state_ref = state.borrow_mut();
     state_ref.child = Some(child);
+    state_ref.backend_stdin = backend_stdin;
     state_ref.connect_button.set_sensitive(false);
     state_ref.disconnect_button.set_sensitive(true);
     state_ref
@@ -1191,7 +1319,10 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 }
 
 fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
-    let child = state.borrow_mut().child.take();
+    let (child, _) = {
+        let mut state = state.borrow_mut();
+        (state.child.take(), state.backend_stdin.take())
+    };
     if let Some(mut child) = child {
         let _ = child.kill();
         std::thread::spawn(move || {
@@ -1218,6 +1349,7 @@ fn clear_pairing(state: &Rc<std::cell::RefCell<AppState>>) {
 }
 
 fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
+    poll_mouse_events(state);
     let mut pending = Vec::new();
     {
         let state_ref = state.borrow();
@@ -1283,6 +1415,258 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
             UiEvent::GroqError(message) => state_ref.status.set_text(&message),
         }
     }
+}
+
+fn poll_mouse_events(state: &Rc<std::cell::RefCell<AppState>>) {
+    let mut presses = Vec::new();
+    {
+        let state_ref = state.borrow();
+        while let Ok(press) = state_ref.mouse_rx.try_recv() {
+            presses.push(press);
+        }
+    }
+
+    for press in presses {
+        let mut should_launch = false;
+        {
+            let mut state_ref = state.borrow_mut();
+            if let Some(recording) = state_ref.recording.as_mut() {
+                if press.at < recording.ignore_until || press.at > recording.deadline {
+                    continue;
+                }
+                let next = next_click_sequence(recording.candidate, press);
+                recording.candidate = Some(next);
+                recording.label.set_text(&format!(
+                    "Detected {} ({} click{}). Continue the pattern, then pause briefly to save.",
+                    mouse_button_name(next.button),
+                    next.clicks,
+                    if next.clicks == 1 { "" } else { "s" }
+                ));
+            } else if let Some((button, clicks)) = state_ref
+                .screen_trigger
+                .as_ref()
+                .map(|trigger| (trigger.button, trigger.clicks))
+            {
+                let next = next_click_sequence(state_ref.trigger_clicks, press);
+                state_ref.trigger_clicks = Some(next);
+                if next.button == button && next.clicks == clicks {
+                    state_ref.trigger_clicks = None;
+                    should_launch = true;
+                }
+            }
+        }
+        if should_launch {
+            launch_screen_question(state);
+        }
+    }
+
+    let now = std::time::Instant::now();
+    let mut finished = None;
+    let mut timed_out = None;
+    {
+        let mut state_ref = state.borrow_mut();
+        let mut clear_recording = false;
+        if let Some(recording) = state_ref.recording.as_mut() {
+            if !recording.armed && now >= recording.ignore_until {
+                recording.armed = true;
+                recording
+                    .label
+                    .set_text("Now click your chosen mouse button 1–10 times, then pause briefly.");
+            }
+            if let Some(candidate) = recording.candidate {
+                if now.duration_since(candidate.last_click) >= Duration::from_millis(750) {
+                    finished = Some(crate::config::MouseGesture {
+                        button: candidate.button,
+                        clicks: candidate.clicks,
+                    });
+                    clear_recording = true;
+                }
+            }
+            if finished.is_none() && now >= recording.deadline {
+                timed_out = Some(recording.label.clone());
+                clear_recording = true;
+            }
+        }
+        if clear_recording {
+            state_ref.recording = None;
+        }
+        if let Some(candidate) = state_ref.trigger_clicks {
+            if now.duration_since(candidate.last_click) > Duration::from_millis(750) {
+                state_ref.trigger_clicks = None;
+            }
+        }
+    }
+
+    if let Some(gesture) = finished {
+        match crate::config::Config::save_mouse_gesture(Some(&gesture)) {
+            Ok(()) => {
+                let description = describe_gesture(&gesture);
+                let mut state_ref = state.borrow_mut();
+                state_ref.screen_trigger = Some(gesture);
+                state_ref.trigger_clicks = None;
+                if let Some(label) = state_ref.trigger_label.as_ref() {
+                    label.set_text(&description);
+                }
+                state_ref.status.set_text(&format!(
+                    "Screen gesture saved: {description}. Hyprly is listening while running."
+                ));
+            }
+            Err(error) => state
+                .borrow()
+                .status
+                .set_text(&format!("Could not save screen gesture: {error}")),
+        }
+    }
+    if let Some(label) = timed_out {
+        label.set_text("No mouse clicks detected. Check /dev/input access and try again.");
+        state
+            .borrow()
+            .status
+            .set_text("Gesture recording timed out. Check access to /dev/input/event devices.");
+    }
+}
+
+fn next_click_sequence(
+    previous: Option<ClickSequence>,
+    press: crate::input::MousePress,
+) -> ClickSequence {
+    match previous {
+        Some(previous)
+            if previous.button == press.button
+                && press.at.duration_since(previous.last_click) <= Duration::from_millis(750) =>
+        {
+            ClickSequence {
+                button: previous.button,
+                clicks: previous.clicks.saturating_add(1).min(10),
+                last_click: press.at,
+            }
+        }
+        _ => ClickSequence {
+            button: press.button,
+            clicks: 1,
+            last_click: press.at,
+        },
+    }
+}
+
+fn launch_screen_question(state: &Rc<std::cell::RefCell<AppState>>) {
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            state
+                .borrow()
+                .status
+                .set_text(&format!("Could not locate Hyprly: {error}"));
+            return;
+        }
+    };
+    let backend_stdin = state.borrow().backend_stdin.clone();
+    let Some(backend_stdin) = backend_stdin else {
+        state
+            .borrow()
+            .status
+            .set_text("Start Hyprly and pair the webpage before asking about the screen.");
+        return;
+    };
+    if !send_backend_event(&backend_stdin, serde_json::json!({"type":"screen_started"})) {
+        state
+            .borrow()
+            .status
+            .set_text("Could not reach the paired webpage. Reconnect Hyprly and try again.");
+        return;
+    }
+    match Command::new(executable)
+        .arg("ask-screen")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => {
+            state
+                .borrow()
+                .status
+                .set_text("Screen question started. The answer will appear on the paired webpage.");
+            let events = state.borrow().event_tx.clone();
+            std::thread::spawn(move || match child.wait_with_output() {
+                Ok(output) if output.status.success() => {
+                    let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if answer.is_empty() {
+                        let message = "Groq returned an empty answer.";
+                        let _ = send_backend_event(
+                            &backend_stdin,
+                            serde_json::json!({"type":"screen_error","message":message}),
+                        );
+                        let _ = events.send(UiEvent::Message(message.to_string()));
+                    } else if !send_backend_event(
+                        &backend_stdin,
+                        serde_json::json!({"type":"screen_answer","text":answer}),
+                    ) {
+                        let _ = events.send(UiEvent::Message(
+                            "Could not send the screen answer to the paired webpage.".into(),
+                        ));
+                    }
+                }
+                Ok(output) => {
+                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let message = if detail.is_empty() {
+                        "Screen question failed."
+                    } else {
+                        &detail
+                    };
+                    let _ = send_backend_event(
+                        &backend_stdin,
+                        serde_json::json!({"type":"screen_error","message":message}),
+                    );
+                    let _ = events.send(UiEvent::Message(format!(
+                        "Screen question failed: {}",
+                        message
+                    )));
+                }
+                Err(error) => {
+                    let message = format!("Could not finish screen question: {error}");
+                    let _ = send_backend_event(
+                        &backend_stdin,
+                        serde_json::json!({"type":"screen_error","message":message}),
+                    );
+                    let _ = events.send(UiEvent::Message(format!("{message}")));
+                }
+            });
+        }
+        Err(error) => {
+            let message = format!("Could not start screen question: {error}");
+            let _ = send_backend_event(
+                &backend_stdin,
+                serde_json::json!({"type":"screen_error","message":message}),
+            );
+            state.borrow().status.set_text(&message);
+        }
+    }
+}
+
+fn send_backend_event(
+    stdin: &std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    event: serde_json::Value,
+) -> bool {
+    use std::io::Write;
+    let Ok(mut stdin) = stdin.lock() else {
+        return false;
+    };
+    serde_json::to_writer(&mut *stdin, &event).is_ok()
+        && stdin.write_all(b"\n").is_ok()
+        && stdin.flush().is_ok()
+}
+
+fn mouse_button_name(button: u16) -> String {
+    match button {
+        0x110 => "left mouse button".to_string(),
+        0x111 => "right mouse button".to_string(),
+        0x112 => "middle mouse button".to_string(),
+        code => format!("mouse button {}", code - 0x10f),
+    }
+}
+
+fn describe_gesture(gesture: &crate::config::MouseGesture) -> String {
+    format!("{} × {}", gesture.clicks, mouse_button_name(gesture.button))
 }
 
 fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {

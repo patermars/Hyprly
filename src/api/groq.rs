@@ -1,6 +1,7 @@
 use crate::api::types::{ChatMessage, ChatRequest, ChatResponse, ResponseFormat};
 use crate::config::ApiConfig;
 use anyhow::{bail, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::sync::mpsc;
@@ -127,6 +128,109 @@ impl GroqClient {
             });
 
         Ok(TranscriptionResult { text, confidence })
+    }
+
+    pub async fn analyze_image(
+        &self,
+        model: &str,
+        prompt: &str,
+        image: &[u8],
+        mime_type: &str,
+    ) -> Result<String> {
+        const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+        if image.len() > MAX_IMAGE_BYTES {
+            bail!("Screenshot exceeds Groq's 20 MB image limit");
+        }
+
+        #[derive(serde::Serialize)]
+        struct ImageRequest {
+            model: String,
+            messages: Vec<ImageMessage>,
+            stream: bool,
+            max_completion_tokens: u32,
+        }
+        #[derive(serde::Serialize)]
+        struct ImageMessage {
+            role: String,
+            content: Vec<ImageContent>,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(untagged)]
+        enum ImageContent {
+            Text {
+                #[serde(rename = "type")]
+                kind: String,
+                text: String,
+            },
+            ImageUrl {
+                #[serde(rename = "type")]
+                kind: String,
+                image_url: ImageUrlValue,
+            },
+        }
+        #[derive(serde::Serialize)]
+        struct ImageUrlValue {
+            url: String,
+        }
+
+        let encoded_image = STANDARD.encode(image);
+        let request = ImageRequest {
+            model: model.to_string(),
+            messages: vec![ImageMessage {
+                role: "user".to_string(),
+                content: vec![
+                    ImageContent::Text {
+                        kind: "text".to_string(),
+                        text: prompt.to_string(),
+                    },
+                    ImageContent::ImageUrl {
+                        kind: "image_url".to_string(),
+                        image_url: ImageUrlValue {
+                            url: format!("data:{mime_type};base64,{encoded_image}"),
+                        },
+                    },
+                ],
+            }],
+            stream: false,
+            max_completion_tokens: self.max_tokens,
+        };
+
+        let mut last_error = None;
+        for key in &self.api_keys {
+            if key.trim().is_empty() {
+                continue;
+            }
+            match self
+                .client
+                .post(GROQ_API_URL)
+                .bearer_auth(key)
+                .json(&request)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let body: serde_json::Value = response.json().await?;
+                    if let Some(answer) = body
+                        .pointer("/choices/0/message/content")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        return Ok(answer.to_string());
+                    }
+                    last_error = Some(anyhow::anyhow!("Groq returned an empty vision response"));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    last_error = Some(anyhow::anyhow!(
+                        "Groq vision request failed with status {}: {}",
+                        status,
+                        body
+                    ));
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured")))
     }
 
     pub async fn stream_chat(

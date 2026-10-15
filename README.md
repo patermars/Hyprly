@@ -33,12 +33,13 @@ Hyprly is a Linux desktop app that captures meeting audio through PipeWire, tran
 - Local HTTPS connection
 - Midnight, Paper, and Aurora themes
 - PDF and DOCX interview context
+- On-demand screen reading with Groq vision
 - System tray controls
 - No audio saved to disk
 
 ## Requirements
 
-- Linux with GTK4, PipeWire, and WirePlumber
+- Linux with GTK4, PipeWire, WirePlumber, and `grim`
 - Rust and Cargo to build from source (Cargo is included with Rust)
 - A [Groq API key](https://console.groq.com/keys)
 - A phone browser on the same local network
@@ -48,14 +49,14 @@ Install the dependencies and build tools with your distribution's package manage
 **Arch Linux**
 
 ```bash
-sudo pacman -S --needed base-devel git gtk4 pipewire wireplumber rust openssl pkgconf
+sudo pacman -S --needed base-devel git gtk4 pipewire wireplumber grim rust openssl pkgconf
 ```
 
 **Debian / Ubuntu**
 
 ```bash
 sudo apt update
-sudo apt install build-essential git libgtk-4-dev libssl-dev pkg-config pipewire wireplumber rustc cargo
+sudo apt install build-essential git libgtk-4-dev libssl-dev pkg-config pipewire wireplumber grim rustc cargo
 ```
 
 ## Build and run

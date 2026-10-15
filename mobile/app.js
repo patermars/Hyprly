@@ -192,7 +192,7 @@ function renderMarkdown(text) {
   html = html.replace(/```([\w]*)\n([\s\S]*?)```/g, (match, lang, code) => {
     const unescaped = code.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
     codeBlocks.push({ lang, code: unescaped });
-    return `@@CODE_BLOCK_${codeBlocks.length - 1}@@`;
+    return `@@CODEBLOCK${codeBlocks.length - 1}@@`;
   });
   html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
@@ -219,7 +219,7 @@ function renderMarkdown(text) {
     } else {
       if (inUl) { resultLines.push('</ul>'); inUl = false; }
       if (inOl) { resultLines.push('</ol>'); inOl = false; }
-      if (line.trim() !== '' && !line.match(/^<h[1-4]>/) && !line.match(/^@@CODE_BLOCK_\d+@@$/)) {
+      if (line.trim() !== '' && !line.match(/^<h[1-4]>/) && !line.match(/^@@CODEBLOCK\d+@@$/)) {
         resultLines.push(`<p>${line}</p>`);
       } else {
         resultLines.push(line);
@@ -233,7 +233,7 @@ function renderMarkdown(text) {
     const block = codeBlocks[i];
     const hl = highlight(block.code, block.lang);
     const pre = `<pre><button class="copy-btn">Copy</button><code>${hl}</code></pre>`;
-    html = html.replace(`@@CODE_BLOCK_${i}@@`, pre);
+    html = html.replace(`@@CODEBLOCK${i}@@`, pre);
   }
   return html;
 }

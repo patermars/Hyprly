@@ -324,7 +324,14 @@ button:active { transform: translateY(1px) scale(.985); }
   .status-pill { gap: 5px; padding: 6px 7px; font-size: 9px; }
   .status-pill::before { width: 6px; height: 6px; }
   .topbar-controls { gap: 7px; }
-  #answer-card { width: calc(100vw - 24px); max-height: calc(100dvh - 260px); padding: 18px; }
+  #answer-card {
+    top: 72px;
+    bottom: 148px;
+    width: calc(100vw - 24px);
+    max-height: none;
+    padding: 18px;
+    transform: translateX(-50%);
+  }
   .answer-card.empty { min-height: 190px; }
   #answer-text { font-size: 15px; }
   #control-bar { bottom: 87px; width: calc(100vw - 24px); }
@@ -343,9 +350,12 @@ button:active { transform: translateY(1px) scale(.985); }
   .status-pill { padding: 6px; font-size: 8px; }
 }
 @media (max-height: 620px) {
-  #answer-card { max-height: calc(100dvh - 205px); }
+  #answer-card { top: 66px; bottom: 132px; }
   .answer-card.empty { min-height: 160px; }
   .transcript-card { max-height: 58px; }
+}
+@media (min-width: 761px) and (max-height: 620px) {
+  #answer-card { top: 50%; bottom: auto; max-height: calc(100dvh - 205px); transform: translate(-50%, -50%); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

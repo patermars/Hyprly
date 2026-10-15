@@ -10,6 +10,31 @@ pub struct Config {
     pub audio: AudioConfig,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub screen: ScreenConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ScreenConfig {
+    #[serde(default = "default_vision_model")]
+    pub vision_model: String,
+    #[serde(default)]
+    pub mouse_gesture: Option<MouseGesture>,
+}
+
+impl Default for ScreenConfig {
+    fn default() -> Self {
+        Self {
+            vision_model: default_vision_model(),
+            mouse_gesture: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct MouseGesture {
+    pub button: u16,
+    pub clicks: u8,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -112,6 +137,9 @@ impl Default for AudioConfig {
 fn default_model() -> String {
     "openai/gpt-oss-20b".to_string()
 }
+fn default_vision_model() -> String {
+    "qwen/qwen3.8-27b".to_string()
+}
 fn default_max_tokens() -> u32 {
     1024
 }
@@ -210,7 +238,50 @@ impl Config {
         config.audio.endpoint_silence_ms = config.audio.endpoint_silence_ms.clamp(800, 1_500);
         config.audio.debounce_ms = config.audio.debounce_ms.clamp(150, 700);
         config.context.max_chars = config.context.max_chars.clamp(1_000, 100_000);
+        if let Some(gesture) = &mut config.screen.mouse_gesture {
+            gesture.button = gesture.button.clamp(0x110, 0x11f);
+            gesture.clicks = gesture.clicks.clamp(1, 10);
+        }
         Ok(config)
+    }
+
+    pub fn save_mouse_gesture(gesture: Option<&MouseGesture>) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+
+        let mut document = if path.exists() {
+            fs::read_to_string(&path)?.parse::<toml_edit::DocumentMut>()?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+        if !document.contains_key("screen") {
+            document["screen"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let screen = document["screen"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("The [screen] config section must be a TOML table"))?;
+        if let Some(gesture) = gesture {
+            let mut table = toml_edit::Table::new();
+            table["button"] = toml_edit::value(gesture.button as i64);
+            table["clicks"] = toml_edit::value(gesture.clicks as i64);
+            screen["mouse_gesture"] = toml_edit::Item::Table(table);
+        } else {
+            screen.remove("mouse_gesture");
+        }
+
+        let serialized = document.to_string();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
     }
 
     pub fn save_api_keys(api_keys: &[String]) -> anyhow::Result<()> {
