@@ -19,6 +19,11 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libgtk-4-dev libssl-dev pkg-config
+
       - name: Build release binary
         run: cargo build --release --locked
 
