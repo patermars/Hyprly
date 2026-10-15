@@ -1,6 +1,6 @@
 [package]
 name = "hyprly"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 description = "GTK4 AI meeting assistant with a mobile client"
