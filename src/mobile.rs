@@ -151,10 +151,11 @@ impl MobileHub {
         }
     }
 
-    pub fn structured_answer(&self, text: &str, response: &AiResponse) {
+    pub fn structured_answer(&self, response: &AiResponse) {
+        self.set_last_answer(&response.answer);
         self.publish(json!({
             "type": "answer",
-            "text": text,
+            "text": &response.answer,
             "structured": serde_json::to_value(response).unwrap_or_default()
         }));
     }
@@ -210,9 +211,10 @@ fn write_private_file(path: &Path, contents: &str) -> anyhow::Result<()> {
 fn tls_certificates(
     local_ip: Option<std::net::IpAddr>,
 ) -> anyhow::Result<(String, String, String)> {
-    let tls_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("hyprly/tls");
+    let tls_dir = crate::config::Config::config_path()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("tls");
     fs::create_dir_all(&tls_dir)?;
     fs::set_permissions(&tls_dir, fs::Permissions::from_mode(0o700))?;
     let ca_cert_path = tls_dir.join("root-ca.pem");
@@ -251,9 +253,16 @@ fn tls_certificates(
 }
 
 async fn index() -> Response {
+    static_asset_response(
+        include_bytes!("../mobile/index.html"),
+        "text/html; charset=utf-8",
+    )
+}
+
+fn static_asset_response(contents: &'static [u8], content_type: &'static str) -> Response {
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        include_str!("../mobile/index.html"),
+        [(header::CONTENT_TYPE, content_type)],
+        Bytes::from_static(contents),
     )
         .into_response()
 }
@@ -283,54 +292,36 @@ async fn ca_certificate(State(hub): State<MobileHub>) -> Response {
 }
 
 async fn styles() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../mobile/styles.css"),
+    static_asset_response(
+        include_bytes!("../mobile/styles.css"),
+        "text/css; charset=utf-8",
     )
-        .into_response()
 }
 
 async fn script() -> Response {
-    (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        include_str!("../mobile/app.js"),
+    static_asset_response(
+        include_bytes!("../mobile/app.js"),
+        "application/javascript; charset=utf-8",
     )
-        .into_response()
 }
 
 async fn logo() -> Response {
-    (
-        [(header::CONTENT_TYPE, "image/png")],
-        include_bytes!("../assets/logo.png").as_slice(),
-    )
-        .into_response()
+    static_asset_response(include_bytes!("../assets/logo.png"), "image/png")
 }
 
 async fn logo_text() -> Response {
-    (
-        [(header::CONTENT_TYPE, "image/png")],
-        include_bytes!("../assets/logo_text.png").as_slice(),
-    )
-        .into_response()
+    static_asset_response(include_bytes!("../assets/logo_text.png"), "image/png")
 }
 
 async fn logo_text_white() -> Response {
-    (
-        [(header::CONTENT_TYPE, "image/png")],
-        include_bytes!("../assets/logo_text_white.png").as_slice(),
-    )
-        .into_response()
+    static_asset_response(include_bytes!("../assets/logo_text_white.png"), "image/png")
 }
 
 async fn manifest() -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/manifest+json")],
-        include_str!("../mobile/manifest.webmanifest"),
+    static_asset_response(
+        include_bytes!("../mobile/manifest.webmanifest"),
+        "application/manifest+json",
     )
-        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -454,8 +445,9 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
             json!({"type":"connected"}).to_string().into(),
         ))
         .await;
-    hub.connected_clients.fetch_add(1, Ordering::Relaxed);
-    hub.connected.send_replace(true);
+    if hub.connected_clients.fetch_add(1, Ordering::Relaxed) == 0 {
+        hub.connected.send_replace(true);
+    }
     let mut events = hub.events.subscribe();
     loop {
         tokio::select! {

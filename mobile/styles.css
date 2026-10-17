@@ -364,6 +364,7 @@ button:active { transform: translateY(1px) scale(.985); }
 .pair-code-entry { display: flex; min-width: 0; flex: 1; gap: 7px; }
 .pair-code-entry input { width: 0; }
 .scan-button { flex: 0 0 48px; padding: 9px; border-color: var(--border); color: var(--accent); background: var(--surface-raised); box-shadow: none; font-size: 20px; }
+.scan-button svg { display: block; width: 28px; height: 28px; }
 .scan-button:hover { border-color: var(--accent-dim); background: var(--accent-wash); }
 #pair-form > button[type="submit"] { flex: 0 0 auto; }
 .qr-scanner { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(4, 7, 11, .78); backdrop-filter: blur(12px); }

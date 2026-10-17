@@ -8,10 +8,7 @@ use crate::{
 };
 use anyhow::Result;
 use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    collections::BTreeMap, io::Cursor, process::Stdio, sync::atomic::Ordering,
     time::Instant as StdInstant,
 };
 use tokio::{
@@ -22,11 +19,19 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-static CHUNK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+pub(crate) const AUDIO_SAMPLE_RATE: u32 = 16_000;
+pub(crate) const AUDIO_CHANNELS: u16 = 1;
+pub(crate) const AUDIO_PCM_FORMAT: &str = "s16";
+pub(crate) const AUDIO_FRAME_DURATION_MS: u32 = 100;
+const MILLISECONDS_PER_SECOND: u32 = 1_000;
+pub(crate) const AUDIO_FRAME_SAMPLES: usize =
+    (AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_MS / MILLISECONDS_PER_SECOND) as usize;
+const MAX_TRANSCRIPT_CHARS: usize = 12_000;
+const MIN_ENDPOINT_SILENCE_MS: u64 = 100;
 
 struct RecordedChunk {
     sequence: u64,
-    path: PathBuf,
+    wav: Vec<u8>,
     recorded_at: StdInstant,
     recording_ms: u128,
 }
@@ -40,8 +45,7 @@ struct CompletedTranscription {
 }
 
 struct PipelineState {
-    raw_transcript: String,
-    clean_transcript: String,
+    transcript: String,
     debounce_deadline: Option<Instant>,
     pending_ai: Option<CancellationToken>,
     clean_config: CleanConfig,
@@ -50,8 +54,7 @@ struct PipelineState {
 impl PipelineState {
     fn new(audio_config: &AudioConfig) -> Self {
         Self {
-            raw_transcript: String::new(),
-            clean_transcript: String::new(),
+            transcript: String::new(),
             debounce_deadline: None,
             pending_ai: None,
             clean_config: CleanConfig {
@@ -97,26 +100,49 @@ fn append_transcript(existing: &mut String, incoming: &str) -> bool {
     true
 }
 
-fn is_silent(path: &std::path::Path, threshold: f32) -> bool {
-    let reader = match hound::WavReader::open(path) {
+fn is_silent(wav: &[u8], threshold: f32) -> bool {
+    let reader = match hound::WavReader::new(Cursor::new(wav)) {
         Ok(r) => r,
         Err(_) => return false,
     };
     let spec = reader.spec();
     if spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16 {
-        let samples: Vec<f32> = reader
-            .into_samples::<i16>()
-            .filter_map(|s| s.ok())
-            .map(|s| s as f32 / 32768.0)
-            .collect();
-        if samples.is_empty() {
-            return true;
-        }
-        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
-        rms < threshold
+        root_mean_square(
+            reader
+                .into_samples::<i16>()
+                .filter_map(|sample| sample.ok())
+                .map(|sample| sample as f32 / 32_768.0),
+        )
+        .map(|rms| rms < threshold)
+        .unwrap_or(true)
     } else {
         false
     }
+}
+
+fn root_mean_square(samples: impl Iterator<Item = f32>) -> Option<f32> {
+    let (sum_squares, count) = samples.fold((0.0, 0), |(sum, count), sample| {
+        (sum + sample * sample, count + 1)
+    });
+    (count > 0).then(|| (sum_squares / count as f32).sqrt())
+}
+
+fn encode_wav(pcm: &[u8]) -> Result<Vec<u8>> {
+    let spec = hound::WavSpec {
+        channels: AUDIO_CHANNELS,
+        sample_rate: AUDIO_SAMPLE_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut output = Cursor::new(Vec::with_capacity(pcm.len() + 44));
+    {
+        let mut writer = hound::WavWriter::new(&mut output, spec)?;
+        for sample in pcm.as_chunks::<2>().0 {
+            writer.write_sample(i16::from_le_bytes(*sample))?;
+        }
+        writer.finalize()?;
+    }
+    Ok(output.into_inner())
 }
 
 pub async fn run(
@@ -136,6 +162,7 @@ pub async fn run(
         anyhow::bail!("GROQ_API_KEY is required when audio capture is enabled");
     }
 
+    let groq = std::sync::Arc::new(GroqClient::new(&api));
     let mut state = PipelineState::new(&audio);
     let mut cmd_rx = mobile.subscribe_commands();
     let shutdown = CancellationToken::new();
@@ -149,10 +176,12 @@ pub async fn run(
 
     let audio_clone = audio.clone();
     let mobile_clone = mobile.clone();
-    let mut connection = mobile.subscribe_connection();
+    let mut connection_state = mobile.subscribe_connection();
+    let mut connection = connection_state.clone();
     let paused = mobile.paused.clone();
     let recorder_shutdown = shutdown.clone();
     let recorder = tokio::spawn(async move {
+        let mut sequence = 0_u64;
         loop {
             if recorder_shutdown.is_cancelled() {
                 break;
@@ -179,11 +208,12 @@ pub async fn run(
             match record_chunk(&audio_clone, recorder_shutdown.clone(), connection.clone()).await {
                 Ok(Some(wav)) => {
                     let chunk = RecordedChunk {
-                        sequence: CHUNK_SEQUENCE.load(Ordering::Relaxed).saturating_sub(1),
-                        path: wav,
+                        sequence,
+                        wav,
                         recorded_at,
                         recording_ms: recorded_at.elapsed().as_millis(),
                     };
+                    sequence = sequence.saturating_add(1);
                     if chunk_tx.send(chunk).await.is_err() {
                         break;
                     }
@@ -204,7 +234,7 @@ pub async fn run(
         std::sync::Arc::new(Semaphore::new(audio.max_concurrent_transcriptions.max(1)));
     let mut transcription_tasks = tokio::task::JoinSet::new();
     let mut pending_transcriptions = BTreeMap::new();
-    let mut next_sequence = CHUNK_SEQUENCE.load(Ordering::Relaxed);
+    let mut next_sequence = 0;
 
     loop {
         tokio::select! {
@@ -212,7 +242,7 @@ pub async fn run(
             Some(chunk) = chunk_rx.recv() => {
                 let result_tx = transcription_tx.clone();
                 let audio_for_task = audio.clone();
-                let api_for_task = api.clone();
+                let groq_for_task = groq.clone();
                 let mobile_for_task = mobile.clone();
                 let connection_for_task = mobile.subscribe_connection();
                 let transcription_limit_for_task = transcription_limit.clone();
@@ -220,25 +250,24 @@ pub async fn run(
                     let permit = transcription_limit_for_task.acquire_owned().await;
                     let _permit = permit;
                     let started = StdInstant::now();
-                    let result = if !*connection_for_task.borrow() {
-                        Ok(None)
-                    } else if audio_for_task.vad_enabled
-                        && is_silent(&chunk.path, audio_for_task.silence_threshold)
+                    let mut connection_for_task = connection_for_task;
+                    let result = if !*connection_for_task.borrow()
+                        || (audio_for_task.vad_enabled
+                            && is_silent(&chunk.wav, audio_for_task.silence_threshold))
                     {
                         Ok(None)
                     } else {
                         mobile_for_task.status("transcribing", "Transcribing");
-                        GroqClient::new(&api_for_task)
-                            .transcribe(
-                                chunk.path.to_str().unwrap_or_default(),
+                        tokio::select! {
+                            biased;
+                            _ = connection_for_task.changed() => Ok(None),
+                            result = groq_for_task.transcribe(
+                                &chunk.wav,
                                 &audio_for_task.transcription_model,
                                 &audio_for_task.language,
-                            )
-                            .await
-                            .map(Some)
-                            .map_err(|error| format!("{error:#}"))
+                            ) => result.map(Some).map_err(|error| format!("{error:#}")),
+                        }
                     };
-                    let _ = tokio::fs::remove_file(&chunk.path).await;
                     let _ = result_tx.send(CompletedTranscription {
                         sequence: chunk.sequence,
                         recorded_at: chunk.recorded_at,
@@ -259,6 +288,9 @@ pub async fn run(
                     result.recorded_at.elapsed().as_millis()
                 );
                 eprintln!("[latency] chunk={} recording_ms={}", result.sequence, result.recording_ms);
+                if !*connection_state.borrow() {
+                    continue;
+                }
                 let text = match result.text {
                     Ok(Some(result))
                         if !result.text.trim().is_empty()
@@ -281,24 +313,24 @@ pub async fn run(
                 if cleaned_text.trim().is_empty() {
                     continue;
                 }
-                if topic::is_new_topic(&state.clean_transcript, &cleaned_text) {
-                    state.raw_transcript.clear();
-                    state.clean_transcript.clear();
+                if topic::is_new_topic(&state.transcript, &cleaned_text) {
+                    state.transcript.clear();
                     if let Some(token) = state.pending_ai.take() {
                         token.cancel();
                     }
                     mobile.topic_changed();
                 }
 
-                if !append_transcript(&mut state.raw_transcript, &cleaned_text) {
+                if !append_transcript(&mut state.transcript, &cleaned_text) {
                     continue;
                 }
-                if state.raw_transcript.len() > 12000 {
-                    state.raw_transcript.drain(..state.raw_transcript.len() - 12000);
+                if state.transcript.len() > MAX_TRANSCRIPT_CHARS {
+                    state
+                        .transcript
+                        .drain(..state.transcript.len() - MAX_TRANSCRIPT_CHARS);
                 }
 
-                state.clean_transcript = state.raw_transcript.clone();
-                mobile.transcript(&state.clean_transcript);
+                mobile.transcript(&state.transcript);
 
                 state.debounce_deadline =
                     Some(Instant::now() + Duration::from_millis(audio.debounce_ms));
@@ -307,8 +339,7 @@ pub async fn run(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Ok(MobileCommand::ClearTranscript) => {
-                        state.raw_transcript.clear();
-                        state.clean_transcript.clear();
+                        state.transcript.clear();
                         mobile.transcript("");
                     }
                     Ok(MobileCommand::UpdateContext(value)) => {
@@ -324,6 +355,20 @@ pub async fn run(
                     Err(_) => {}
                 }
             }
+            changed = connection_state.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                if !*connection_state.borrow() {
+                    state.transcript.clear();
+                    state.debounce_deadline = None;
+                    if let Some(token) = state.pending_ai.take() {
+                        token.cancel();
+                    }
+                    mobile.transcript("");
+                    mobile.status("ready", "Waiting for phone pairing");
+                }
+            }
             _ = async {
                 if let Some(deadline) = state.debounce_deadline {
                     sleep(deadline.saturating_duration_since(Instant::now())).await;
@@ -333,7 +378,7 @@ pub async fn run(
             } => {
                 state.debounce_deadline = None;
 
-                if state.clean_transcript.trim().is_empty() {
+                if !*connection_state.borrow() || state.transcript.trim().is_empty() {
                     continue;
                 }
 
@@ -347,13 +392,17 @@ pub async fn run(
                 mobile.status("thinking", "Thinking");
                 mobile.answer_started();
 
-                let transcript_snapshot = state.clean_transcript.clone();
+                let transcript_snapshot = state.transcript.clone();
                 let context_snapshot = context.prompt_section();
                 let mobile_ai = mobile.clone();
-                let api_clone = api.clone();
+                let groq_for_ai = groq.clone();
+                let mut ai_connection = mobile.subscribe_connection();
 
                 let ai_started = StdInstant::now();
                 let handle = tokio::spawn(async move {
+                    if !*ai_connection.borrow() {
+                        return;
+                    }
                     let messages = vec![
                         ChatMessage {
                             role: "system".to_string(),
@@ -371,8 +420,8 @@ pub async fn run(
 
                     let (token_tx, mut token_rx) = mpsc::unbounded_channel();
                     let stream_task = tokio::spawn({
-                        let ai_client2 = GroqClient::new(&api_clone);
-                        async move { ai_client2.stream_chat(messages, token_tx).await }
+                        let stream_client = groq_for_ai.clone();
+                        async move { stream_client.stream_chat(messages, token_tx).await }
                     });
 
                     let mut full_answer = String::new();
@@ -381,6 +430,12 @@ pub async fn run(
                             _ = cancel.cancelled() => {
                                 stream_task.abort();
                                 return;
+                            }
+                            changed = ai_connection.changed() => {
+                                if changed.is_err() || !*ai_connection.borrow() {
+                                    stream_task.abort();
+                                    return;
+                                }
                             }
                             token = token_rx.recv() => {
                                 match token {
@@ -394,32 +449,51 @@ pub async fn run(
                         }
                     }
 
+                    if cancel.is_cancelled() || !*ai_connection.borrow() {
+                        return;
+                    }
                     match stream_task.await {
                         Ok(Ok(())) => {
                             match response::parse(&full_answer) {
                                 Ok(parsed) => {
-                                    mobile_ai.set_last_answer(&parsed.answer);
                                     let delivery_started = StdInstant::now();
-                                    mobile_ai.structured_answer(&parsed.answer, &parsed);
+                                    mobile_ai.structured_answer(&parsed);
                                     eprintln!("[latency] delivery_ms={}", delivery_started.elapsed().as_millis());
                                     eprintln!("[latency] ai_ms={}", ai_started.elapsed().as_millis());
                                 }
                                 Err(_) => {
                                     let retry_msgs = response::retry_messages(&full_answer);
-                                    let retry_client = GroqClient::new(&api_clone);
+                                    let retry_client = groq_for_ai.clone();
                                     let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
                                     let retry_task = tokio::spawn(async move {
                                         retry_client.stream_chat(retry_msgs, retry_tx).await
                                     });
                                     let mut retry_answer = String::new();
-                                    while let Some(t) = retry_rx.recv().await {
-                                        retry_answer.push_str(&t);
+                                    loop {
+                                        tokio::select! {
+                                            _ = cancel.cancelled() => {
+                                                retry_task.abort();
+                                                return;
+                                            }
+                                            changed = ai_connection.changed() => {
+                                                if changed.is_err() || !*ai_connection.borrow() {
+                                                    retry_task.abort();
+                                                    return;
+                                                }
+                                            }
+                                            token = retry_rx.recv() => match token {
+                                                Some(token) => retry_answer.push_str(&token),
+                                                None => break,
+                                            }
+                                        }
                                     }
                                     if let Ok(Ok(())) = retry_task.await {
+                                        if cancel.is_cancelled() || !*ai_connection.borrow() {
+                                            return;
+                                        }
                                         if let Ok(parsed) = response::parse(&retry_answer) {
-                                            mobile_ai.set_last_answer(&parsed.answer);
                                             let delivery_started = StdInstant::now();
-                                            mobile_ai.structured_answer(&parsed.answer, &parsed);
+                                            mobile_ai.structured_answer(&parsed);
                                             eprintln!("[latency] delivery_ms={} retry=true", delivery_started.elapsed().as_millis());
                                             eprintln!("[latency] ai_ms={} retry=true", ai_started.elapsed().as_millis());
                                             return;
@@ -456,9 +530,6 @@ pub async fn run(
 
     shutdown.cancel();
     let _ = recorder.await;
-    while let Ok(chunk) = chunk_rx.try_recv() {
-        let _ = tokio::fs::remove_file(chunk.path).await;
-    }
     drop(transcription_tx);
     while !transcription_tasks.is_empty() {
         tokio::select! {
@@ -481,24 +552,17 @@ async fn record_chunk(
     config: &AudioConfig,
     shutdown: CancellationToken,
     mut connection: tokio::sync::watch::Receiver<bool>,
-) -> Result<Option<PathBuf>> {
-    let sequence = CHUNK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "hyprly-meeting-{}-{}.wav",
-        std::process::id(),
-        sequence
-    ));
+) -> Result<Option<Vec<u8>>> {
     let mut command = Command::new("pw-record");
-    command.args([
-        "--format",
-        "s16",
-        "--rate",
-        "16000",
-        "--channels",
-        "1",
-        "--raw",
-        "-",
-    ]);
+    command
+        .arg("--format")
+        .arg(AUDIO_PCM_FORMAT)
+        .arg("--rate")
+        .arg(AUDIO_SAMPLE_RATE.to_string())
+        .arg("--channels")
+        .arg(AUDIO_CHANNELS.to_string())
+        .arg("--raw")
+        .arg("-");
     let source = if config.source.trim().is_empty() {
         default_output_source().await.unwrap_or_default()
     } else {
@@ -516,16 +580,18 @@ async fn record_chunk(
         .take()
         .ok_or_else(|| anyhow::anyhow!("pw-record did not provide audio output"))?;
 
-    const FRAME_SAMPLES: usize = 1_600; // 100 ms at 16 kHz.
-    let frame_bytes = FRAME_SAMPLES * std::mem::size_of::<i16>();
-    let preferred_samples = config.chunk_seconds.max(1) as usize * 16_000;
-    let min_samples = config.min_utterance_seconds.max(1) as usize * 16_000;
+    let sample_rate = AUDIO_SAMPLE_RATE as usize;
+    let frame_bytes = AUDIO_FRAME_SAMPLES * std::mem::size_of::<i16>();
+    let preferred_samples = config.chunk_seconds.max(1) as usize * sample_rate;
+    let min_samples = config.min_utterance_seconds.max(1) as usize * sample_rate;
     let max_samples = config
         .max_utterance_seconds
         .max(config.min_utterance_seconds)
         .max(1) as usize
-        * 16_000;
-    let endpoint_silence_samples = (config.endpoint_silence_ms.max(100) as usize * 16_000) / 1_000;
+        * sample_rate;
+    let endpoint_silence_samples =
+        (config.endpoint_silence_ms.max(MIN_ENDPOINT_SILENCE_MS) as usize * sample_rate)
+            / MILLISECONDS_PER_SECOND as usize;
     let mut pcm = Vec::with_capacity(preferred_samples * std::mem::size_of::<i16>());
     let mut frame = vec![0_u8; frame_bytes];
     let mut speech_seen = false;
@@ -557,13 +623,13 @@ async fn record_chunk(
             }
         }
 
-        let samples = frame
-            .chunks_exact(2)
-            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0);
-        let samples: Vec<f32> = samples.collect();
-        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
-            / samples.len() as f32)
-            .sqrt();
+        let samples = frame.as_chunks::<2>().0;
+        let rms = root_mean_square(
+            samples
+                .iter()
+                .map(|bytes| i16::from_le_bytes(*bytes) as f32 / 32_768.0),
+        )
+        .unwrap_or(0.0);
         pcm.extend_from_slice(&frame);
 
         if rms >= config.silence_threshold {
@@ -590,40 +656,20 @@ async fn record_chunk(
         return Ok(None);
     }
     if pcm.is_empty() {
-        let _ = tokio::fs::remove_file(&path).await;
         anyhow::bail!("pw-record produced no audio: {status}");
     }
 
     if !status.success() && !stop_requested {
-        let _ = tokio::fs::remove_file(&path).await;
         anyhow::bail!("pw-record stopped unexpectedly: {status}");
     }
 
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16_000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let write_result = (|| -> Result<()> {
-        let mut writer = hound::WavWriter::create(&path, spec)?;
-        for bytes in pcm.chunks_exact(2) {
-            writer.write_sample(i16::from_le_bytes([bytes[0], bytes[1]]))?;
-        }
-        writer.finalize()?;
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = tokio::fs::remove_file(&path).await;
-        return Err(error);
-    }
-
-    Ok(Some(path))
+    Ok(Some(encode_wav(&pcm)?))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::append_transcript;
+    use super::{append_transcript, encode_wav, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+    use std::io::Cursor;
 
     #[test]
     fn drops_duplicate_and_overlapping_chunks() {
@@ -635,33 +681,38 @@ mod tests {
         ));
         assert_eq!(transcript, "We should review the numbers again tomorrow");
     }
+
+    #[test]
+    fn encodes_pcm_as_a_mono_16khz_wav_in_memory() {
+        let samples = [0_i16, 1_000, -1_000];
+        let pcm: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        let wav = encode_wav(&pcm).unwrap();
+        let reader = hound::WavReader::new(Cursor::new(wav)).unwrap();
+
+        assert_eq!(reader.spec().channels, AUDIO_CHANNELS);
+        assert_eq!(reader.spec().sample_rate, AUDIO_SAMPLE_RATE);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        assert_eq!(
+            reader
+                .into_samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            samples
+        );
+    }
 }
 
 async fn default_output_source() -> Option<String> {
-    let output = Command::new("wpctl")
-        .args(["status", "-n"])
+    let output = Command::new(crate::pipewire::WPCTL)
+        .args(crate::pipewire::STATUS_ARGS)
         .output()
         .await
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let mut in_sinks = false;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.contains("├─ Sinks:") {
-            in_sinks = true;
-            continue;
-        }
-        if line.contains("├─ Sources:") {
-            break;
-        }
-        if in_sinks && line.contains('*') {
-            let after_star = line.split_once('*')?.1.trim_start();
-            let node_id = after_star.split_once('.')?.0.trim();
-            if node_id.parse::<u32>().is_ok() {
-                return Some(node_id.to_string());
-            }
-        }
-    }
-    None
+    crate::pipewire::default_sink(&String::from_utf8_lossy(&output.stdout))
 }

@@ -38,66 +38,55 @@ impl GroqClient {
         }
     }
 
-    pub async fn transcribe(
+    async fn send_with_api_keys(
         &self,
-        path: &str,
-        model: &str,
-        language: &str,
-    ) -> Result<TranscriptionResult> {
+        mut build_request: impl FnMut(&str) -> reqwest::RequestBuilder,
+        failure_label: &str,
+    ) -> Result<reqwest::Response> {
         let mut last_error = None;
-        let mut response = None;
         for key in &self.api_keys {
-            let file = reqwest::multipart::Part::file(path)
-                .await?
-                .file_name("meeting.wav");
-            let mut form = reqwest::multipart::Form::new()
-                .text("model", model.to_string())
-                .text("response_format", "verbose_json")
-                .part("file", file);
-            if !language.trim().is_empty() {
-                form = form.text("language", language.trim().to_string());
-            }
-            match self
-                .client
-                .post("https://api.groq.com/openai/v1/audio/transcriptions")
-                .bearer_auth(key)
-                .multipart(form)
-                .send()
-                .await
-            {
-                Ok(result) if result.status().is_success() => {
-                    response = Some(result);
-                    break;
-                }
-                Ok(result) => {
-                    let status = result.status();
-                    let body = result.text().await.unwrap_or_default();
+            match build_request(key).send().await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
                     last_error = Some(anyhow::anyhow!(
-                        "Transcription request failed with status {}: {}",
-                        status,
-                        body
+                        "{failure_label} failed with status {status}: {body}"
                     ));
                 }
                 Err(error) => last_error = Some(error.into()),
             }
         }
-        let response = match response {
-            Some(response) => response,
-            None => {
-                return Err(
-                    last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured"))
-                )
-            }
-        };
-        let status = response.status();
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured")))
+    }
+
+    pub async fn transcribe(
+        &self,
+        wav: &[u8],
+        model: &str,
+        language: &str,
+    ) -> Result<TranscriptionResult> {
+        let response = self
+            .send_with_api_keys(
+                |key| {
+                    let file =
+                        reqwest::multipart::Part::bytes(wav.to_vec()).file_name("meeting.wav");
+                    let mut form = reqwest::multipart::Form::new()
+                        .text("model", model.to_string())
+                        .text("response_format", "verbose_json")
+                        .part("file", file);
+                    if !language.trim().is_empty() {
+                        form = form.text("language", language.trim().to_string());
+                    }
+                    self.client
+                        .post("https://api.groq.com/openai/v1/audio/transcriptions")
+                        .bearer_auth(key)
+                        .multipart(form)
+                },
+                "Transcription request",
+            )
+            .await?;
         let body = response.text().await?;
-        if !status.is_success() {
-            bail!(
-                "Transcription request failed with status {}: {}",
-                status,
-                body
-            );
-        }
         let parsed: serde_json::Value = serde_json::from_str(&body)?;
         let text = parsed
             .get("text")
@@ -248,70 +237,72 @@ impl GroqClient {
             }),
         };
 
-        let mut last_error = None;
-        let mut response = None;
-        for key in &self.api_keys {
-            match self
-                .client
-                .post(GROQ_API_URL)
-                .bearer_auth(key)
-                .json(&req_body)
-                .send()
-                .await
-            {
-                Ok(result) if result.status().is_success() => {
-                    response = Some(result);
-                    break;
-                }
-                Ok(result) => {
-                    let status = result.status();
-                    let body = result.text().await.unwrap_or_default();
-                    last_error = Some(anyhow::anyhow!(
-                        "API request failed with status {}: {}",
-                        status,
-                        body
-                    ));
-                }
-                Err(error) => last_error = Some(error.into()),
-            }
-        }
-        let response = match response {
-            Some(response) => response,
-            None => {
-                return Err(
-                    last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured"))
-                )
-            }
-        };
+        let response = self
+            .send_with_api_keys(
+                |key| {
+                    self.client
+                        .post(GROQ_API_URL)
+                        .bearer_auth(key)
+                        .json(&req_body)
+                },
+                "API request",
+            )
+            .await?;
 
         let mut stream = response.bytes_stream();
+        let mut pending = Vec::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            let text = String::from_utf8_lossy(&chunk);
-
-            for line in text.lines() {
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
-                    if data == "[DONE]" {
-                        continue;
-                    }
-
-                    if let Ok(resp) = serde_json::from_str::<ChatResponse>(data) {
-                        if let Some(choice) = resp.choices.first() {
-                            if let Some(delta) = &choice.delta {
-                                if let Some(content) = &delta.content {
-                                    if sender.send(content.clone()).is_err() {
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                        }
+            pending.extend_from_slice(&chunk?);
+            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                let mut line: Vec<_> = pending.drain(..=newline).collect();
+                line.pop();
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                if let Some(content) = parse_sse_line(&line) {
+                    if sender.send(content).is_err() {
+                        return Ok(());
                     }
                 }
+            }
+        }
+        if !pending.is_empty() {
+            if let Some(content) = parse_sse_line(&pending) {
+                let _ = sender.send(content);
             }
         }
 
         Ok(())
+    }
+}
+
+fn parse_sse_line(line: &[u8]) -> Option<String> {
+    let line = std::str::from_utf8(line).ok()?;
+    let data = line.strip_prefix("data:")?.trim_start();
+    if data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<ChatResponse>(data)
+        .ok()?
+        .choices
+        .into_iter()
+        .next()?
+        .delta?
+        .content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sse_line;
+
+    #[test]
+    fn parses_content_from_an_sse_data_line() {
+        assert_eq!(
+            parse_sse_line(br#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#),
+            Some("Hello".to_string())
+        );
+        assert_eq!(parse_sse_line(b"data: [DONE]"), None);
+        assert_eq!(parse_sse_line(b"event: ping"), None);
     }
 }

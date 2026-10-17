@@ -134,13 +134,12 @@ function handleEvent(event) {
       if (streamedText !== null) {
         DOM.answerText.innerHTML = renderStreamingMarkdown(streamedText);
       }
-      const streamedLanguage = readJsonStringField(streamingAnswer, 'language') || '';
       const streamedCode = readJsonStringField(streamingAnswer, 'source');
       if (streamedCode !== null &&
           (lastRenderedStreamedCode === '' ||
            streamedCode.length - lastRenderedStreamedCode.length >= 32 ||
            streamedCode.endsWith('\n'))) {
-        renderCode(streamedCode, streamedLanguage);
+        renderCode(streamedCode);
         lastRenderedStreamedCode = streamedCode;
       }
       break;
@@ -157,8 +156,7 @@ function handleEvent(event) {
           DOM.answerBullets.hidden = false;
         }
         if (event.structured.code) {
-          const { language, source } = event.structured.code;
-          renderCode(source, language || '');
+          renderCode(event.structured.code.source);
         }
       }
       break;
@@ -189,9 +187,9 @@ function escapeHTML(str) {
 function renderMarkdown(text) {
   let html = escapeHTML(text);
   const codeBlocks = [];
-  html = html.replace(/```([\w]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+  html = html.replace(/```[\w]*\n([\s\S]*?)```/g, (_match, code) => {
     const unescaped = code.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-    codeBlocks.push({ lang, code: unescaped });
+    codeBlocks.push(unescaped);
     return `@@CODEBLOCK${codeBlocks.length - 1}@@`;
   });
   html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
@@ -231,7 +229,7 @@ function renderMarkdown(text) {
   html = resultLines.join('\n');
   for (let i = 0; i < codeBlocks.length; i++) {
     const block = codeBlocks[i];
-    const hl = highlight(block.code, block.lang);
+    const hl = highlight(block);
     const pre = `<pre><button class="copy-btn">Copy</button><code>${hl}</code></pre>`;
     html = html.replace(`@@CODEBLOCK${i}@@`, pre);
   }
@@ -284,24 +282,12 @@ function decodeJsonString(value) {
     return null;
   }
 }
-function renderCode(source, language) {
-  const hl = highlight(source, language);
+function renderCode(source) {
+  const hl = highlight(source);
   DOM.answerCode.innerHTML = `<pre><button class="copy-btn">Copy</button><code>${hl}</code></pre>`;
   DOM.answerCode.hidden = false;
-  const btn = DOM.answerCode.querySelector('.copy-btn');
-  if (btn) {
-    btn.onclick = () => {
-      navigator.clipboard.writeText(source);
-      btn.textContent = 'Copied!';
-      btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = 'Copy';
-        btn.classList.remove('copied');
-      }, 2000);
-    };
-  }
 }
-function highlight(code, lang) {
+function highlight(code) {
   let escaped = escapeHTML(code);
   const keywords = 'function const let var return if else for while class import export switch case break try catch async await type interface struct func map chan go defer match impl fn let mut pub use package select from where insert update delete';
   const kwRegex = new RegExp(`\\b(${keywords.split(' ').join('|')})\\b`, 'g');
@@ -309,7 +295,6 @@ function highlight(code, lang) {
   escaped = escaped.replace(/\b(\d+(\.\d+)?)\b/g, '<span class="num">$1</span>');
   escaped = escaped.replace(/(\/\/.*|\#.*)/g, '<span class="cm">$&</span>');
   escaped = escaped.replace(/\b([a-zA-Z_]\w*)(?=\s*\()/g, '<span class="fn">$1</span>');
-  let temp = escaped.replace(/<span class="[^"]+">.*?<\/span>/g, match => match.replace(kwRegex, m => m));
   const parts = [];
   let lastIdx = 0;
   escaped.replace(/<span class="[^"]+">.*?<\/span>/g, (match, offset) => {
@@ -486,7 +471,7 @@ for (const zone of document.querySelectorAll('.file-dropzone')) {
 }
 DOM.btnPause.onclick = () => {
   paused = !paused;
-  DOM.btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+  DOM.btnPause.textContent = paused ? 'Resume' : 'Pause';
   DOM.btnPause.className = paused ? 'active' : '';
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: paused ? 'pause' : 'resume' }));

@@ -1,5 +1,4 @@
 use crate::config::ContextConfig;
-use anyhow::Result;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -13,7 +12,7 @@ pub struct ContextStore {
 }
 
 impl ContextStore {
-    pub fn load(config: &ContextConfig, config_path: &Path) -> Result<Self> {
+    pub fn load(config: &ContextConfig, config_path: &Path) -> Self {
         let mut sections = Vec::new();
         let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
 
@@ -41,11 +40,11 @@ impl ContextStore {
                 config.max_chars
             );
         }
-        Ok(Self {
+        Self {
             reference,
             web_reference: String::new(),
             max_chars: config.max_chars,
-        })
+        }
     }
 
     pub fn set_web_context(&mut self, value: String) {

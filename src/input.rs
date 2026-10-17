@@ -16,8 +16,6 @@ pub struct MousePress {
 }
 
 const EV_KEY: u16 = 0x01;
-const BTN_MOUSE_FIRST: u16 = 0x110;
-const BTN_MOUSE_LAST: u16 = 0x11f;
 const EVIOCGBIT_BASE: u32 = 0x20;
 
 pub fn start(sender: Sender<MousePress>) {
@@ -48,7 +46,9 @@ fn watch_device(path: PathBuf, sender: Sender<MousePress>) {
                 match read_event(&mut file) {
                     Ok(event)
                         if event.type_ == EV_KEY
-                            && (BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).contains(&event.code)
+                            && (crate::config::MIN_MOUSE_BUTTON
+                                ..=crate::config::MAX_MOUSE_BUTTON)
+                                .contains(&event.code)
                             && event.value == 1 =>
                     {
                         if sender
@@ -83,7 +83,7 @@ fn has_mouse_buttons(file: &File) -> bool {
     if result < 0 {
         return false;
     }
-    (BTN_MOUSE_FIRST..=BTN_MOUSE_LAST).any(|code| {
+    (crate::config::MIN_MOUSE_BUTTON..=crate::config::MAX_MOUSE_BUTTON).any(|code| {
         let byte = bits[code as usize / 8];
         byte & (1 << (code % 8)) != 0
     })

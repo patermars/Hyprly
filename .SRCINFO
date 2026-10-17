@@ -1,6 +1,6 @@
 pkgbase = hyprly-git
 	pkgdesc = GTK4 AI meeting assistant with a mobile client
-	pkgver = 2.0.1.r0.g3b2affe
+	pkgver = 2.0.1.r1.g3b31fcc
 	pkgrel = 1
 	url = https://github.com/patermars/hyprly
 	arch = x86_64

@@ -5,15 +5,17 @@ mod context;
 mod gui;
 mod input;
 mod mobile;
+mod pipewire;
 mod response;
 mod screen;
+mod text;
 mod topic;
 mod transcript;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use std::{env, fs, os::unix::fs::PermissionsExt};
 use std::process::Command;
+use std::{env, fs, os::unix::fs::PermissionsExt};
 use tokio::runtime::Runtime;
 
 #[derive(Parser)]
@@ -77,7 +79,11 @@ fn print_config() -> Result<()> {
     let mut config = config::Config::load()?;
     let configured_key_count = config.api.api_keys.len();
     let has_key = !config.api.api_key.is_empty() || configured_key_count > 0;
-    config.api.api_key = if has_key { "<redacted>".into() } else { String::new() };
+    config.api.api_key = if has_key {
+        "<redacted>".into()
+    } else {
+        String::new()
+    };
     config.api.api_keys = vec!["<redacted>".into(); configured_key_count];
     print!("{}", toml::to_string_pretty(&config)?);
     Ok(())
@@ -87,18 +93,21 @@ fn run_doctor() -> Result<()> {
     let config_path = config::Config::config_path();
     let config = config::Config::load().context("Could not load Hyprly configuration")?;
     let has_api_key = !config.api.api_keys.is_empty();
-    let wpctl_available = executable_in_path("wpctl");
-    let pipewire_ready = wpctl_available
-        && Command::new("wpctl")
-            .args(["status", "-n"])
-            .output()
-            .is_ok_and(|output| output.status.success());
+    let pipewire_ready = wpctl_status().is_ok_and(|output| output.status.success());
     let grim_available = executable_in_path("grim");
 
     println!("Configuration: {}", config_path.display());
     print_check("Groq API key", has_api_key, "not configured");
-    print_check("PipeWire session", pipewire_ready, "wpctl could not query PipeWire");
-    print_check("grim screenshot tool", grim_available, "not installed (screen questions need it)");
+    print_check(
+        "PipeWire session",
+        pipewire_ready,
+        "wpctl could not query PipeWire",
+    );
+    print_check(
+        "grim screenshot tool",
+        grim_available,
+        "not installed (screen questions need it)",
+    );
 
     if !has_api_key || !pipewire_ready {
         bail!("Hyprly is missing a required setting or audio service; see the checks above.");
@@ -107,9 +116,7 @@ fn run_doctor() -> Result<()> {
 }
 
 fn list_audio_devices() -> Result<()> {
-    let output = Command::new("wpctl")
-        .args(["status", "-n"])
-        .output()
+    let output = wpctl_status()
         .context("Could not run wpctl. Install WirePlumber and start the PipeWire user session.")?;
     if !output.status.success() {
         bail!("wpctl could not query the PipeWire session");
@@ -118,14 +125,21 @@ fn list_audio_devices() -> Result<()> {
     Ok(())
 }
 
+fn wpctl_status() -> std::io::Result<std::process::Output> {
+    Command::new(pipewire::WPCTL)
+        .args(pipewire::STATUS_ARGS)
+        .output()
+}
+
 fn executable_in_path(name: &str) -> bool {
     env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
         .map(|directory| directory.join(name))
         .any(|candidate| {
-            fs::metadata(candidate)
-                .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
         })
 }
 
@@ -139,7 +153,7 @@ fn print_check(label: &str, ok: bool, detail: &str) {
 
 fn run_daemon() -> Result<()> {
     let config = config::Config::load()?;
-    let context = context::ContextStore::load(&config.context, &config::Config::config_path())?;
+    let context = context::ContextStore::load(&config.context, &config::Config::config_path());
     let mobile_hub = mobile::MobileHub::new()?;
     println!("{}", mobile_hub.pairing_info());
     use std::io::Write;
@@ -148,6 +162,20 @@ fn run_daemon() -> Result<()> {
     let runtime = Runtime::new()?;
     let screen_hub = mobile_hub.clone();
     runtime.block_on(async move {
+        let mut connection = mobile_hub.subscribe_connection();
+        tokio::spawn(async move {
+            use std::io::Write;
+            loop {
+                println!(
+                    "{}",
+                    serde_json::json!({"event":"connection", "connected":*connection.borrow()})
+                );
+                let _ = std::io::stdout().flush();
+                if connection.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
             let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();

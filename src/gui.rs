@@ -15,6 +15,7 @@ use std::{
 };
 
 const GROQ_KEYS_URL: &str = "https://console.groq.com/keys";
+const GESTURE_CLICK_GAP: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Debug)]
 struct PairingInfo {
@@ -26,9 +27,10 @@ struct PairingInfo {
 
 enum UiEvent {
     Pairing(PairingInfo),
+    Connection(bool),
+    ScreenFinished(u32),
     UpdateAvailable { version: String, url: String },
     Message(String),
-    GroqError(String),
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +124,8 @@ struct AppState {
     update_label: gtk::Label,
     update_link: gtk::LinkButton,
     child: Option<Child>,
+    paired: bool,
+    screen_pid: Option<u32>,
     backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
     event_tx: Sender<UiEvent>,
     event_rx: Receiver<UiEvent>,
@@ -271,10 +275,10 @@ fn build_window(application: &gtk::Application) {
     key_row.append(&show_key);
     setup_card.append(&key_row);
     let mut backup_keys = Vec::new();
-    for index in 2..=3 {
+    for index in 2..=crate::config::MAX_API_KEYS {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let entry = gtk::Entry::builder()
-            .placeholder_text(&format!("Backup key {index} (optional)"))
+            .placeholder_text(format!("Backup key {index} (optional)"))
             .visibility(false)
             .hexpand(true)
             .build();
@@ -435,6 +439,8 @@ fn build_window(application: &gtk::Application) {
         update_label,
         update_link,
         child: None,
+        paired: false,
+        screen_pid: None,
         backend_stdin: None,
         event_tx,
         event_rx,
@@ -481,6 +487,7 @@ fn build_window(application: &gtk::Application) {
         let provider = theme_provider.clone();
         let wordmark = wordmark.clone();
         let wordmark_surface = wordmark_surface.clone();
+        let status = status.clone();
         move |picker| {
             let theme = theme_names
                 .get(picker.selected() as usize)
@@ -489,7 +496,9 @@ fn build_window(application: &gtk::Application) {
             apply_gui_theme(&provider, theme);
             *wordmark_surface.borrow_mut() = create_wordmark_surface(theme);
             wordmark.queue_draw();
-            save_gui_theme(theme);
+            if let Err(error) = save_gui_theme(theme) {
+                status.set_text(&format!("Could not save theme preference: {error}"));
+            }
         }
     });
 
@@ -567,7 +576,7 @@ fn create_wordmark_surface(theme: &str) -> gtk::cairo::ImageSurface {
     };
     let (source_width, source_height, source) = decode_png(image).expect("wordmark PNG is valid");
     let mut argb = Vec::with_capacity(source.len());
-    for rgba in source.chunks_exact(4) {
+    for rgba in source.as_chunks::<4>().0 {
         let a = rgba[3] as u16;
         let r = (rgba[0] as u16 * a / 255) as u8;
         let g = (rgba[1] as u16 * a / 255) as u8;
@@ -1061,35 +1070,20 @@ fn selected_dropdown_value(dropdown: &gtk::DropDown, values: &[String]) -> Strin
 
 fn available_audio_sources() -> Vec<(String, String)> {
     let mut choices = vec![("Default system audio output".to_string(), String::new())];
-    let Ok(output) = Command::new("wpctl").args(["status", "-n"]).output() else {
+    let Ok(output) = Command::new(crate::pipewire::WPCTL)
+        .args(crate::pipewire::STATUS_ARGS)
+        .output()
+    else {
         return choices;
     };
     if !output.status.success() {
         return choices;
     }
-    let mut in_sinks = false;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if line.contains("Sinks:") {
-            in_sinks = true;
-            continue;
-        }
-        if line.contains("Sources:") {
-            break;
-        }
-        if !in_sinks {
-            continue;
-        }
-        let clean = line.replace('*', " ");
-        let Some((node_id, name)) = clean.trim().split_once('.') else {
-            continue;
-        };
-        let node_id = node_id.trim().trim_matches(|ch: char| !ch.is_ascii_digit());
-        let name = name.trim();
-        if !node_id.is_empty() && node_id.chars().all(|ch| ch.is_ascii_digit()) && !name.is_empty()
-        {
-            choices.push((format!("{name} · {node_id}"), node_id.to_string()));
-        }
-    }
+    choices.extend(
+        crate::pipewire::parse_sinks(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .map(|sink| (format!("{} · {}", sink.name, sink.id), sink.id)),
+    );
     choices
 }
 
@@ -1204,13 +1198,7 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
 }
 
 fn gui_theme_path() -> std::path::PathBuf {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    config.join("hyprly").join("gui-theme")
+    crate::config::Config::config_path().with_file_name("gui-theme")
 }
 
 fn load_gui_theme() -> String {
@@ -1224,24 +1212,28 @@ fn load_gui_theme() -> String {
     }
 }
 
-fn save_gui_theme(theme: &str) {
+fn save_gui_theme(theme: &str) -> std::io::Result<()> {
     let path = gui_theme_path();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    let _ = std::fs::write(path, theme);
+    std::fs::write(path, theme)
 }
 
-fn save_current_key(state: &Rc<std::cell::RefCell<AppState>>) {
-    let state_ref = state.borrow();
-    let keys = std::iter::once(state_ref.api_key.text().to_string())
+fn entered_api_keys(state: &AppState) -> Vec<String> {
+    std::iter::once(state.api_key.text().to_string())
         .chain(
-            state_ref
+            state
                 .backup_keys
                 .iter()
                 .map(|entry| entry.text().to_string()),
         )
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn save_current_key(state: &Rc<std::cell::RefCell<AppState>>) {
+    let state_ref = state.borrow();
+    let keys = entered_api_keys(&state_ref);
     match crate::config::Config::save_api_keys(&keys) {
         Ok(()) => state_ref
             .status
@@ -1325,14 +1317,7 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     }
     let keys = {
         let state = state.borrow();
-        std::iter::once(state.api_key.text().to_string())
-            .chain(
-                state
-                    .backup_keys
-                    .iter()
-                    .map(|entry| entry.text().to_string()),
-            )
-            .collect::<Vec<_>>()
+        entered_api_keys(&state)
     };
     if keys.iter().all(|key| key.trim().is_empty()) {
         state
@@ -1384,11 +1369,21 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     if let Some(stdout) = child.stdout.take() {
         let event_tx = event_tx.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().flatten() {
+            for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
                 };
-                if value.get("event").and_then(|v| v.as_str()) != Some("pairing") {
+                let event = value.get("event").and_then(|v| v.as_str());
+                if event == Some("connection") {
+                    let _ = event_tx.send(UiEvent::Connection(
+                        value
+                            .get("connected")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    ));
+                    continue;
+                }
+                if event != Some("pairing") {
                     continue;
                 }
                 let info = PairingInfo {
@@ -1419,9 +1414,9 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     }
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().flatten() {
+            for line in BufReader::new(stderr).lines().map_while(|line| line.ok()) {
                 if is_groq_api_error(&line) {
-                    let _ = event_tx.send(UiEvent::GroqError(friendly_api_error(&line)));
+                    let _ = event_tx.send(UiEvent::Message(friendly_api_error(&line)));
                 }
             }
         });
@@ -1429,6 +1424,7 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 
     let mut state_ref = state.borrow_mut();
     state_ref.child = Some(child);
+    state_ref.paired = false;
     state_ref.backend_stdin = backend_stdin;
     state_ref.connect_button.set_sensitive(false);
     state_ref.disconnect_button.set_sensitive(true);
@@ -1438,6 +1434,7 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 }
 
 fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
+    stop_screen_process(&mut state.borrow_mut());
     let (child, _) = {
         let mut state = state.borrow_mut();
         (state.child.take(), state.backend_stdin.take())
@@ -1449,6 +1446,7 @@ fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
         });
     }
     clear_pairing(state);
+    state.borrow_mut().paired = false;
     let state_ref = state.borrow();
     state_ref.connect_button.set_sensitive(true);
     state_ref.disconnect_button.set_sensitive(false);
@@ -1494,8 +1492,10 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
         .as_mut()
         .and_then(|child| child.try_wait().ok().flatten());
     if exited.is_some() {
+        stop_screen_process(&mut state.borrow_mut());
         state.borrow_mut().child = None;
         clear_pairing(state);
+        state.borrow_mut().paired = false;
         let state_ref = state.borrow();
         state_ref.connect_button.set_sensitive(true);
         state_ref.disconnect_button.set_sensitive(false);
@@ -1510,8 +1510,20 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
         }
     }
     for event in events {
-        let state_ref = state.borrow();
+        let mut state_ref = state.borrow_mut();
         match event {
+            UiEvent::Connection(connected) => {
+                state_ref.paired = connected;
+                if !connected {
+                    state_ref.trigger_clicks = None;
+                    stop_screen_process(&mut state_ref);
+                }
+            }
+            UiEvent::ScreenFinished(pid) => {
+                if state_ref.screen_pid == Some(pid) {
+                    state_ref.screen_pid = None;
+                }
+            }
             UiEvent::Pairing(info) => {
                 state_ref.code.set_text(&info.code);
                 state_ref.setup_url.set_uri(&info.setup_url);
@@ -1538,7 +1550,6 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
                 state_ref.update_notice.set_visible(true);
             }
             UiEvent::Message(message) => state_ref.status.set_text(&message),
-            UiEvent::GroqError(message) => state_ref.status.set_text(&message),
         }
     }
 }
@@ -1595,12 +1606,13 @@ fn poll_mouse_events(state: &Rc<std::cell::RefCell<AppState>>) {
         if let Some(recording) = state_ref.recording.as_mut() {
             if !recording.armed && now >= recording.ignore_until {
                 recording.armed = true;
-                recording
-                    .label
-                    .set_text("Now click your chosen mouse button 1–10 times, then pause briefly.");
+                recording.label.set_text(&format!(
+                    "Now click your chosen mouse button 1–{} times, then pause briefly.",
+                    crate::config::MAX_GESTURE_CLICKS
+                ));
             }
             if let Some(candidate) = recording.candidate {
-                if now.duration_since(candidate.last_click) >= Duration::from_millis(750) {
+                if now.duration_since(candidate.last_click) >= GESTURE_CLICK_GAP {
                     finished = Some(crate::config::MouseGesture {
                         button: candidate.button,
                         clicks: candidate.clicks,
@@ -1617,7 +1629,7 @@ fn poll_mouse_events(state: &Rc<std::cell::RefCell<AppState>>) {
             state_ref.recording = None;
         }
         if let Some(candidate) = state_ref.trigger_clicks {
-            if now.duration_since(candidate.last_click) > Duration::from_millis(750) {
+            if now.duration_since(candidate.last_click) > GESTURE_CLICK_GAP {
                 state_ref.trigger_clicks = None;
             }
         }
@@ -1659,11 +1671,14 @@ fn next_click_sequence(
     match previous {
         Some(previous)
             if previous.button == press.button
-                && press.at.duration_since(previous.last_click) <= Duration::from_millis(750) =>
+                && press.at.duration_since(previous.last_click) <= GESTURE_CLICK_GAP =>
         {
             ClickSequence {
                 button: previous.button,
-                clicks: previous.clicks.saturating_add(1).min(10),
+                clicks: previous
+                    .clicks
+                    .saturating_add(1)
+                    .min(crate::config::MAX_GESTURE_CLICKS),
                 last_click: press.at,
             }
         }
@@ -1676,6 +1691,16 @@ fn next_click_sequence(
 }
 
 fn launch_screen_question(state: &Rc<std::cell::RefCell<AppState>>) {
+    if !state.borrow().paired {
+        state
+            .borrow()
+            .status
+            .set_text("Pair the webpage before asking about the screen.");
+        return;
+    }
+    if state.borrow().screen_pid.is_some() {
+        return;
+    }
     let executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
@@ -1708,63 +1733,64 @@ fn launch_screen_question(state: &Rc<std::cell::RefCell<AppState>>) {
         .spawn()
     {
         Ok(child) => {
+            let pid = child.id();
+            state.borrow_mut().screen_pid = Some(pid);
             state
                 .borrow()
                 .status
                 .set_text("Screen question started. The answer will appear on the paired webpage.");
             let events = state.borrow().event_tx.clone();
-            std::thread::spawn(move || match child.wait_with_output() {
-                Ok(output) if output.status.success() => {
-                    let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if answer.is_empty() {
-                        let message = "Groq returned an empty answer.";
-                        let _ = send_backend_event(
+            std::thread::spawn(move || {
+                match child.wait_with_output() {
+                    Ok(output) if output.status.success() => {
+                        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if answer.is_empty() {
+                            let message = "Groq returned an empty answer.";
+                            send_screen_error(&backend_stdin, message);
+                            let _ = events.send(UiEvent::Message(message.to_string()));
+                        } else if !send_backend_event(
                             &backend_stdin,
-                            serde_json::json!({"type":"screen_error","message":message}),
-                        );
+                            serde_json::json!({"type":"screen_answer","text":answer}),
+                        ) {
+                            let _ = events.send(UiEvent::Message(
+                                "Could not send the screen answer to the paired webpage.".into(),
+                            ));
+                        }
+                    }
+                    Ok(output) => {
+                        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                        let message = if detail.is_empty() {
+                            "Screen question failed."
+                        } else {
+                            &detail
+                        };
+                        send_screen_error(&backend_stdin, message);
+                        let _ = events.send(UiEvent::Message(format!(
+                            "Screen question failed: {}",
+                            message
+                        )));
+                    }
+                    Err(error) => {
+                        let message = format!("Could not finish screen question: {error}");
+                        send_screen_error(&backend_stdin, &message);
                         let _ = events.send(UiEvent::Message(message.to_string()));
-                    } else if !send_backend_event(
-                        &backend_stdin,
-                        serde_json::json!({"type":"screen_answer","text":answer}),
-                    ) {
-                        let _ = events.send(UiEvent::Message(
-                            "Could not send the screen answer to the paired webpage.".into(),
-                        ));
                     }
                 }
-                Ok(output) => {
-                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    let message = if detail.is_empty() {
-                        "Screen question failed."
-                    } else {
-                        &detail
-                    };
-                    let _ = send_backend_event(
-                        &backend_stdin,
-                        serde_json::json!({"type":"screen_error","message":message}),
-                    );
-                    let _ = events.send(UiEvent::Message(format!(
-                        "Screen question failed: {}",
-                        message
-                    )));
-                }
-                Err(error) => {
-                    let message = format!("Could not finish screen question: {error}");
-                    let _ = send_backend_event(
-                        &backend_stdin,
-                        serde_json::json!({"type":"screen_error","message":message}),
-                    );
-                    let _ = events.send(UiEvent::Message(format!("{message}")));
-                }
+                let _ = events.send(UiEvent::ScreenFinished(pid));
             });
         }
         Err(error) => {
             let message = format!("Could not start screen question: {error}");
-            let _ = send_backend_event(
-                &backend_stdin,
-                serde_json::json!({"type":"screen_error","message":message}),
-            );
+            send_screen_error(&backend_stdin, &message);
             state.borrow().status.set_text(&message);
+        }
+    }
+}
+
+fn stop_screen_process(state: &mut AppState) {
+    if let Some(pid) = state.screen_pid.take() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
         }
     }
 }
@@ -1782,12 +1808,27 @@ fn send_backend_event(
         && stdin.flush().is_ok()
 }
 
+fn send_screen_error(
+    stdin: &std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    message: &str,
+) {
+    let _ = send_backend_event(
+        stdin,
+        serde_json::json!({"type":"screen_error","message":message}),
+    );
+}
+
 fn mouse_button_name(button: u16) -> String {
     match button {
-        0x110 => "left mouse button".to_string(),
-        0x111 => "right mouse button".to_string(),
-        0x112 => "middle mouse button".to_string(),
-        code => format!("mouse button {}", code - 0x10f),
+        crate::config::MIN_MOUSE_BUTTON => "left mouse button".to_string(),
+        button if button == crate::config::MIN_MOUSE_BUTTON + 1 => "right mouse button".to_string(),
+        button if button == crate::config::MIN_MOUSE_BUTTON + 2 => {
+            "middle mouse button".to_string()
+        }
+        code => format!(
+            "mouse button {}",
+            code - (crate::config::MIN_MOUSE_BUTTON - 1)
+        ),
     }
 }
 
@@ -1798,13 +1839,8 @@ fn describe_gesture(gesture: &crate::config::MouseGesture) -> String {
 fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
     let keys = {
         let state = state.borrow();
-        std::iter::once(state.api_key.text().to_string())
-            .chain(
-                state
-                    .backup_keys
-                    .iter()
-                    .map(|entry| entry.text().to_string()),
-            )
+        entered_api_keys(&state)
+            .into_iter()
             .filter(|key| !key.trim().is_empty())
             .collect::<Vec<_>>()
     };
@@ -1862,27 +1898,26 @@ fn check_pipewire(state: &Rc<std::cell::RefCell<AppState>>) {
     let sender = state.borrow().event_tx.clone();
     std::thread::spawn(move || {
         let result = (|| -> Result<String> {
-            let status = Command::new("wpctl")
-                .args(["status", "-n"])
+            let status = Command::new(crate::pipewire::WPCTL)
+                .args(crate::pipewire::STATUS_ARGS)
                 .output()
                 .context("WirePlumber command wpctl was not found")?;
             if !status.status.success() {
                 anyhow::bail!("wpctl could not query the PipeWire session");
             }
             let text = String::from_utf8_lossy(&status.stdout);
-            let sink = selected_sink(&text);
+            let sink = crate::pipewire::default_sink(&text);
             let mut command = Command::new("pw-record");
-            command.args([
-                "--rate",
-                "16000",
-                "--channels",
-                "1",
-                "--format",
-                "s16",
-                "--raw",
-                "--sample-count",
-                "1600",
-            ]);
+            command
+                .arg("--rate")
+                .arg(crate::audio::AUDIO_SAMPLE_RATE.to_string())
+                .arg("--channels")
+                .arg(crate::audio::AUDIO_CHANNELS.to_string())
+                .arg("--format")
+                .arg(crate::audio::AUDIO_PCM_FORMAT)
+                .arg("--raw")
+                .arg("--sample-count")
+                .arg(crate::audio::AUDIO_FRAME_SAMPLES.to_string());
             if let Some(sink) = sink {
                 command.args(["--target", &sink]);
             }
@@ -1898,27 +1933,6 @@ fn check_pipewire(state: &Rc<std::cell::RefCell<AppState>>) {
         let message = result.unwrap_or_else(|error| format!("PipeWire check failed: {error:#}"));
         let _ = sender.send(UiEvent::Message(message));
     });
-}
-
-fn selected_sink(status: &str) -> Option<String> {
-    let mut in_sinks = false;
-    for line in status.lines() {
-        if line.contains("Sinks:") {
-            in_sinks = true;
-            continue;
-        }
-        if line.contains("Sources:") {
-            break;
-        }
-        if in_sinks && line.contains('*') {
-            let after_star = line.split_once('*')?.1.trim_start();
-            let id = after_star.split_once('.')?.0.trim();
-            if id.parse::<u32>().is_ok() {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
 }
 
 fn check_document_tools(state: &Rc<std::cell::RefCell<AppState>>) {

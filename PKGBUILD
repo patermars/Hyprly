@@ -4,7 +4,7 @@ if [[ -n ${startdir:-} && -n ${BUILDDIR:-} && "$BUILDDIR" -ef "$startdir" && -f 
 fi
 
 pkgname=hyprly-git
-pkgver=2.0.1.r0.g3b2affe
+pkgver=2.0.1.r1.g3b31fcc
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')

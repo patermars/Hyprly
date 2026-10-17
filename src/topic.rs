@@ -1,3 +1,4 @@
+use crate::text::normalize_word;
 use std::collections::HashSet;
 
 const STOP_WORDS: &[&str] = &[
@@ -7,16 +8,12 @@ const STOP_WORDS: &[&str] = &[
 
 fn terms(text: &str) -> HashSet<String> {
     text.split_whitespace()
-        .map(|word| {
-            word.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase()
-        })
+        .map(normalize_word)
         .filter(|word| word.len() > 1 && !STOP_WORDS.contains(&word.as_str()))
         .collect()
 }
 
-fn domain(text: &str) -> Option<&'static str> {
-    let words = terms(text);
+fn domain(words: &HashSet<String>) -> Option<&'static str> {
     if words.iter().any(|word| {
         matches!(
             word.as_str(),
@@ -43,8 +40,7 @@ fn domain(text: &str) -> Option<&'static str> {
     }
 }
 
-fn has_transition_phrase(text: &str) -> bool {
-    let lower = text.to_lowercase();
+fn has_transition_phrase(lower: &str) -> bool {
     [
         "now ",
         "next ",
@@ -58,12 +54,8 @@ fn has_transition_phrase(text: &str) -> bool {
     .any(|phrase| lower.contains(phrase))
 }
 
-fn is_continuation(previous: &str, current: &str, overlap: f32) -> bool {
-    let words: Vec<String> = current
-        .split_whitespace()
-        .map(|word| word.to_lowercase())
-        .collect();
-    let lower = current.to_lowercase();
+fn is_continuation(previous: &str, lower: &str, overlap: f32) -> bool {
+    let word_count = lower.split_whitespace().count();
     let refinement = [
         "explain that",
         "explain this",
@@ -75,11 +67,11 @@ fn is_continuation(previous: &str, current: &str, overlap: f32) -> bool {
     ]
     .iter()
     .any(|phrase| lower.contains(phrase));
-    let pronoun_reference = words
-        .iter()
-        .any(|word| matches!(word.as_str(), "that" | "this" | "it" | "them" | "those"));
+    let pronoun_reference = lower
+        .split_whitespace()
+        .any(|word| matches!(word, "that" | "this" | "it" | "them" | "those"));
     !previous.trim().is_empty()
-        && (overlap >= 0.25 || (words.len() <= 8 && (refinement || pronoun_reference)))
+        && (overlap >= 0.25 || (word_count <= 8 && (refinement || pronoun_reference)))
 }
 
 /// Returns true when `current` should start a fresh answer context.
@@ -93,20 +85,18 @@ pub fn is_new_topic(previous: &str, current: &str) -> bool {
     if current_terms.is_empty() {
         return false;
     }
-    let overlap = current_terms.intersection(&previous_terms).count() as f32
-        / current_terms.len().max(1) as f32;
+    let overlap =
+        current_terms.intersection(&previous_terms).count() as f32 / current_terms.len() as f32;
+    let current_lower = current.to_lowercase();
+    let domain_changed = matches!(
+        (domain(&previous_terms), domain(&current_terms)),
+        (Some(previous), Some(current)) if previous != current
+    );
+    let independent_question = current_terms.len() >= 4 && overlap < 0.12;
+    let topic_change =
+        has_transition_phrase(&current_lower) || domain_changed || independent_question;
 
-    if has_transition_phrase(current) && !is_continuation(previous, current, overlap) {
-        return true;
-    }
-
-    if let (Some(previous_domain), Some(current_domain)) = (domain(previous), domain(current)) {
-        if previous_domain != current_domain && !is_continuation(previous, current, overlap) {
-            return true;
-        }
-    }
-
-    current_terms.len() >= 4 && overlap < 0.12 && !is_continuation(previous, current, overlap)
+    topic_change && !is_continuation(previous, &current_lower, overlap)
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+use crate::text::normalize_word;
+
 #[derive(Clone, Debug)]
 pub struct CleanConfig {
     pub remove_fillers: bool,
@@ -19,14 +21,9 @@ impl Default for CleanConfig {
     }
 }
 
-fn word_key(word: &str) -> String {
-    word.trim_matches(|c: char| !c.is_alphanumeric())
-        .to_lowercase()
-}
-
 fn is_meaningful_filler(words: &[&str], index: usize) -> bool {
-    let word = word_key(words[index]);
-    let next = words.get(index + 1).map(|word| word_key(word));
+    let word = normalize_word(words[index]);
+    let next = words.get(index + 1).map(|word| normalize_word(word));
     matches!(
         (word.as_str(), next.as_deref()),
         ("ah", Some("yes" | "no" | "okay" | "right")) | ("hmm", Some("let" | "well" | "okay"))
@@ -37,8 +34,8 @@ fn should_keep_like(words: &[&str], index: usize) -> bool {
     let previous = index
         .checked_sub(1)
         .and_then(|i| words.get(i))
-        .map(|word| word_key(word));
-    let next = words.get(index + 1).map(|word| word_key(word));
+        .map(|word| normalize_word(word));
+    let next = words.get(index + 1).map(|word| normalize_word(word));
     matches!(
         (previous.as_deref(), next.as_deref()),
         (Some("would" | "looks" | "feel" | "seem"), _)
@@ -58,7 +55,7 @@ fn remove_fillers(text: &str, config: &CleanConfig) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut kept: Vec<String> = Vec::with_capacity(words.len());
     for (index, word) in words.iter().enumerate() {
-        let key = word_key(word);
+        let key = normalize_word(word);
         if fillers.contains(&key.as_str()) && !is_meaningful_filler(&words, index) {
             if let Some(previous) = kept.last_mut() {
                 if previous.ends_with(',') {
@@ -77,15 +74,14 @@ fn remove_fillers(text: &str, config: &CleanConfig) -> String {
 
 fn collapse_repeats(text: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
+    let mut previous_key: Option<String> = None;
     for word in text.split_whitespace() {
-        if kept
-            .last()
-            .map(|last| word_key(last) == word_key(word) && !word_key(word).is_empty())
-            .unwrap_or(false)
-        {
+        let key = normalize_word(word);
+        if !key.is_empty() && previous_key.as_deref() == Some(key.as_str()) {
             continue;
         }
         kept.push(word);
+        previous_key = Some(key);
     }
     kept.join(" ")
 }
@@ -115,7 +111,7 @@ fn remove_incomplete_fragment(text: &str) -> String {
     let Some(last) = trimmed.split_whitespace().last() else {
         return String::new();
     };
-    let last_key = word_key(last);
+    let last_key = normalize_word(last);
     if !DANGLING.contains(&last_key.as_str()) {
         return trimmed.to_string();
     }

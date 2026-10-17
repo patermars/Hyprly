@@ -14,7 +14,7 @@
 <header class="topbar">
 <img id="brand-wordmark" class="brand-wordmark" src="/logo-text.png" alt="Hyprly">
 <div class="topbar-controls">
-<button id="context-toggle" class="context-toggle" type="button" aria-controls="context-card" aria-expanded="false" hidden><span class="context-icon">☷</span><span class="context-toggle-label">Context</span></button>
+<button id="context-toggle" class="context-toggle" type="button" aria-controls="context-card" aria-expanded="false" hidden><span class="context-toggle-label">Context</span></button>
 <label class="theme-control" for="theme-select"><span>Theme</span><select id="theme-select" aria-label="Color theme"><option value="midnight">Midnight</option><option value="paper">Paper</option><option value="aurora">Aurora</option></select></label>
 <div id="connection-status" class="status-pill">Disconnected</div>
 </div>
@@ -29,7 +29,15 @@
 <form id="pair-form">
 <div class="pair-code-entry">
 <input type="text" id="pair-code" maxlength="6" pattern="[0-9]{6}" required autocomplete="off">
-<button id="btn-scan-qr" class="scan-button" type="button" aria-label="Scan pairing QR code" title="Scan QR code">▣</button>
+<button id="btn-scan-qr" class="scan-button" type="button" aria-label="Scan pairing QR code" title="Scan QR code"><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 100 100" fill="none">
+<g stroke="#1B3558" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+<path d="M12 32 V12 H32"/>
+<path d="M68 12 H88 V32"/>
+<path d="M12 68 V88 H32"/>
+<path d="M88 68 V88 H68"/>
+</g>
+<path d="M12 50 H88" stroke="#F2364B" stroke-width="5" stroke-linecap="round"/>
+</svg></button>
 </div>
 <button type="submit">Connect</button>
 </form>
@@ -94,8 +102,8 @@
 </article>
 </section>
 <div id="control-bar" class="control-bar" hidden>
-<button id="btn-pause">⏸ Pause</button>
-<button id="btn-clear">✕ Clear</button>
+<button id="btn-pause">Pause</button>
+<button id="btn-clear">Clear</button>
 <div id="pipeline-status" class="pipeline-status ready">Ready</div>
 </div>
 <section class="transcript-card">

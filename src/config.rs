@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::{env, fs, io::Write, path::PathBuf};
+use std::{
+    env, fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+pub(crate) const MAX_API_KEYS: usize = 3;
+pub(crate) const MIN_MOUSE_BUTTON: u16 = 0x110;
+pub(crate) const MAX_MOUSE_BUTTON: u16 = 0x11f;
+pub(crate) const MAX_GESTURE_CLICKS: u8 = 10;
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct Config {
@@ -188,19 +197,7 @@ impl Config {
         // Reject malformed or structurally invalid configuration before replacing the file.
         let _: Self = toml::from_str(contents)?;
         let path = Self::config_path();
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
+        Self::write_config(&path, contents)
     }
 
     pub fn load() -> anyhow::Result<Self> {
@@ -223,7 +220,7 @@ impl Config {
                 .push(config.api.api_key.trim().to_string());
         }
         config.api.api_keys.retain(|key| !key.trim().is_empty());
-        config.api.api_keys.truncate(3);
+        config.api.api_keys.truncate(MAX_API_KEYS);
         if let Some(first) = config.api.api_keys.first() {
             config.api.api_key = first.clone();
         }
@@ -239,29 +236,16 @@ impl Config {
         config.audio.debounce_ms = config.audio.debounce_ms.clamp(150, 700);
         config.context.max_chars = config.context.max_chars.clamp(1_000, 100_000);
         if let Some(gesture) = &mut config.screen.mouse_gesture {
-            gesture.button = gesture.button.clamp(0x110, 0x11f);
-            gesture.clicks = gesture.clicks.clamp(1, 10);
+            gesture.button = gesture.button.clamp(MIN_MOUSE_BUTTON, MAX_MOUSE_BUTTON);
+            gesture.clicks = gesture.clicks.clamp(1, MAX_GESTURE_CLICKS);
         }
         Ok(config)
     }
 
     pub fn save_mouse_gesture(gesture: Option<&MouseGesture>) -> anyhow::Result<()> {
         let path = Self::config_path();
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-
-        let mut document = if path.exists() {
-            fs::read_to_string(&path)?.parse::<toml_edit::DocumentMut>()?
-        } else {
-            toml_edit::DocumentMut::new()
-        };
-        if !document.contains_key("screen") {
-            document["screen"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
-        let screen = document["screen"]
-            .as_table_mut()
-            .ok_or_else(|| anyhow::anyhow!("The [screen] config section must be a TOML table"))?;
+        let mut document = read_config_document(&path)?;
+        let screen = table_section_mut(&mut document, "screen")?;
         if let Some(gesture) = gesture {
             let mut table = toml_edit::Table::new();
             table["button"] = toml_edit::value(gesture.button as i64);
@@ -271,65 +255,63 @@ impl Config {
             screen.remove("mouse_gesture");
         }
 
-        let serialized = document.to_string();
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(serialized.as_bytes())?;
-        file.sync_all()?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
+        Self::write_config(&path, &document.to_string())
     }
 
     pub fn save_api_keys(api_keys: &[String]) -> anyhow::Result<()> {
         let path = Self::config_path();
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-
-        let mut document = if path.exists() {
-            fs::read_to_string(&path)?.parse::<toml_edit::DocumentMut>()?
-        } else {
-            toml_edit::DocumentMut::new()
-        };
-        if !document.contains_key("api") {
-            document["api"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
-        let api = document["api"]
-            .as_table_mut()
-            .ok_or_else(|| anyhow::anyhow!("The [api] config section must be a TOML table"))?;
+        let mut document = read_config_document(&path)?;
+        let api = table_section_mut(&mut document, "api")?;
         let keys: Vec<String> = api_keys
             .iter()
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty())
-            .take(3)
+            .take(MAX_API_KEYS)
             .collect();
         api["api_key"] = toml_edit::value(keys.first().cloned().unwrap_or_default());
         api["api_keys"] = toml_edit::value(toml_edit::Array::from_iter(keys.iter().cloned()));
 
-        if !document.contains_key("audio") {
-            document["audio"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
-        let audio = document["audio"]
-            .as_table_mut()
-            .ok_or_else(|| anyhow::anyhow!("The [audio] config section must be a TOML table"))?;
+        let audio = table_section_mut(&mut document, "audio")?;
         if !audio.contains_key("enabled") {
             audio["enabled"] = toml_edit::value(true);
         }
 
-        let serialized = document.to_string();
+        Self::write_config(&path, &document.to_string())
+    }
+
+    fn write_config(path: &Path, contents: &str) -> anyhow::Result<()> {
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)?;
-        file.write_all(serialized.as_bytes())?;
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
+}
+
+fn read_config_document(path: &Path) -> anyhow::Result<toml_edit::DocumentMut> {
+    if path.exists() {
+        Ok(fs::read_to_string(path)?.parse()?)
+    } else {
+        Ok(toml_edit::DocumentMut::new())
+    }
+}
+
+fn table_section_mut<'a>(
+    document: &'a mut toml_edit::DocumentMut,
+    section: &str,
+) -> anyhow::Result<&'a mut toml_edit::Table> {
+    if !document.contains_key(section) {
+        document[section] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document[section]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("The [{section}] config section must be a TOML table"))
 }
