@@ -29,6 +29,18 @@ pub struct ScreenConfig {
     pub vision_model: String,
     #[serde(default)]
     pub mouse_gesture: Option<MouseGesture>,
+    #[serde(default = "default_answer_target")]
+    pub answer_target: String,
+    #[serde(default = "default_overlay_theme")]
+    pub overlay_theme: String,
+}
+
+fn default_answer_target() -> String {
+    "webpage".to_string()
+}
+
+fn default_overlay_theme() -> String {
+    "midnight".to_string()
 }
 
 impl Default for ScreenConfig {
@@ -36,6 +48,8 @@ impl Default for ScreenConfig {
         Self {
             vision_model: default_vision_model(),
             mouse_gesture: None,
+            answer_target: default_answer_target(),
+            overlay_theme: default_overlay_theme(),
         }
     }
 }
@@ -255,6 +269,30 @@ impl Config {
             screen.remove("mouse_gesture");
         }
 
+        Self::write_config(&path, &document.to_string())
+    }
+
+    pub fn save_overlay_theme(theme: &str) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        let mut document = read_config_document(&path)?;
+        let screen = table_section_mut(&mut document, "screen")?;
+        let value = match theme {
+            "paper" | "aurora" => theme,
+            _ => "midnight",
+        };
+        screen["overlay_theme"] = toml_edit::value(value);
+        Self::write_config(&path, &document.to_string())
+    }
+
+    pub fn save_answer_target(target: &str) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        let mut document = read_config_document(&path)?;
+        let screen = table_section_mut(&mut document, "screen")?;
+        let value = match target {
+            "floating" | "both" => target,
+            _ => "webpage",
+        };
+        screen["answer_target"] = toml_edit::value(value);
         Self::write_config(&path, &document.to_string())
     }
 

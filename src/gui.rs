@@ -124,9 +124,11 @@ struct AppState {
     update_label: gtk::Label,
     update_link: gtk::LinkButton,
     child: Option<Child>,
+    overlay_child: Option<Child>,
     paired: bool,
     screen_pid: Option<u32>,
     backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
+    overlay_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
     event_tx: Sender<UiEvent>,
     event_rx: Receiver<UiEvent>,
     tray_rx: Receiver<TrayAction>,
@@ -158,6 +160,791 @@ pub fn run() {
         .build();
     application.connect_activate(build_window);
     application.run();
+}
+
+pub fn run_screen_test_overlay() {
+    let application = gtk::Application::builder()
+        .application_id("io.github.patermars.HyprlyScreenTest")
+        .build();
+    application.connect_activate(|application| {
+        let label = gtk::Label::new(Some(
+            "NO SCREEN SHARE TEST\n\nThis text should stay visible here,\nbut be hidden in the screen share.",
+        ));
+        label.set_justify(gtk::Justification::Center);
+        label.set_wrap(true);
+        label.add_css_class("screen-test-label");
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.set_halign(gtk::Align::Fill);
+        content.set_valign(gtk::Align::Fill);
+        content.set_hexpand(true);
+        content.set_vexpand(true);
+        content.add_css_class("screen-test-window");
+        content.append(&label);
+
+        let window = gtk::ApplicationWindow::builder()
+            .application(application)
+            .title("Hyprly No Screen Share Test")
+            .default_width(460)
+            .default_height(220)
+            .child(&content)
+            .build();
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(
+            ".screen-test-window { background-color: #171923; }\
+             .screen-test-label { color: #f5f7ff; font-size: 20px; font-weight: 700; padding: 28px; }",
+        );
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+        window.present();
+    });
+    application.run_with_args(&["hyprly-screen-test"]);
+}
+
+pub fn run_answer_overlay() {
+    // Keep the application ID aligned with the verified test window class so
+    // the user's existing Hyprland float/no_screen_share rule also matches it.
+    let application = gtk::Application::builder()
+        .application_id("io.github.patermars.HyprlyScreenTest")
+        .build();
+    application.connect_activate(|application| {
+        let (event_tx, event_rx) = mpsc::channel::<serde_json::Value>();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines().map_while(|line| line.ok()) {
+                if let Ok(event) = serde_json::from_str(&line) {
+                    let _ = event_tx.send(event);
+                }
+            }
+        });
+
+        let theme_provider = gtk::CssProvider::new();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.set_margin_top(16);
+        root.set_margin_bottom(0);
+        root.set_margin_start(18);
+        root.set_margin_end(18);
+        root.add_css_class("overlay-root");
+
+        let pages = gtk::Stack::new();
+        pages.set_hexpand(true);
+        let page_switcher = gtk::StackSwitcher::new();
+        page_switcher.set_stack(Some(&pages));
+        page_switcher.set_halign(gtk::Align::Start);
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        header.add_css_class("overlay-island");
+        let logo = gtk::DrawingArea::builder()
+            .content_width(26)
+            .content_height(26)
+            .build();
+        logo.set_size_request(26, 26);
+        let logo_surface = create_logo_surface();
+        logo.set_draw_func(move |_, context, width, height| {
+            let scale = (width as f64 / logo_surface.width() as f64)
+                .min(height as f64 / logo_surface.height() as f64);
+            let x = (width as f64 - logo_surface.width() as f64 * scale) / 2.0;
+            let y = (height as f64 - logo_surface.height() as f64 * scale) / 2.0;
+            context.translate(x, y);
+            context.scale(scale, scale);
+            let _ = context.set_source_surface(&logo_surface, 0.0, 0.0);
+            let _ = context.paint();
+        });
+        let theme = gtk::DropDown::from_strings(&["Midnight", "Paper", "Aurora"]);
+        theme.set_tooltip_text(Some("Choose appearance"));
+        let saved_theme = crate::config::Config::load()
+            .map(|config| config.screen.overlay_theme)
+            .unwrap_or_else(|_| "midnight".to_string());
+        theme.set_selected(match saved_theme.as_str() {
+            "paper" => 1,
+            "aurora" => 2,
+            _ => 0,
+        });
+        let connection = gtk::Label::new(Some("Waiting for Hyprly…"));
+        connection.set_hexpand(true);
+        connection.set_xalign(0.0);
+        connection.add_css_class("overlay-status");
+        let pause = gtk::Button::with_label("Pause");
+        pause.add_css_class("overlay-control");
+        let clear = gtk::Button::with_label("Clear");
+        clear.add_css_class("overlay-control");
+        let copy = gtk::Button::with_label("Copy");
+        copy.add_css_class("overlay-control");
+        copy.set_tooltip_text(Some("Copy answer"));
+        copy.set_sensitive(false);
+        header.append(&logo);
+        header.append(&page_switcher);
+        header.append(&connection);
+        header.append(&pause);
+        header.append(&clear);
+        header.append(&copy);
+        header.append(&gtk::Label::new(Some("Theme")));
+        header.append(&theme);
+        root.append(&header);
+
+        root.append(&pages);
+
+        let session = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        session.set_margin_top(12);
+        session.set_margin_bottom(0);
+        session.add_css_class("hud-card");
+        let context_strip = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        context_strip.add_css_class("hud-context-strip");
+        let context_tag = gtk::Label::new(Some("CONTEXT"));
+        context_tag.add_css_class("overlay-heading");
+        let vision_status = gtk::Label::new(Some("Live vision ready"));
+        vision_status.set_hexpand(true);
+        vision_status.set_halign(gtk::Align::End);
+        vision_status.add_css_class("overlay-status");
+        context_strip.append(&context_tag);
+        context_strip.append(&vision_status);
+        session.append(&context_strip);
+        let pairing = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        pairing.add_css_class("hud-pairing");
+        let pair_intro =
+            gtk::Label::new(Some("Enter your Hyprly pairing code to start the session"));
+        pair_intro.set_xalign(0.0);
+        pair_intro.add_css_class("overlay-status");
+        pairing.append(&pair_intro);
+        let local_code = gtk::Entry::builder()
+            .placeholder_text("6-digit pairing code")
+            .max_length(6)
+            .max_width_chars(24)
+            .build();
+        local_code.set_width_chars(24);
+        let local_pair = gtk::Button::with_label("Connect");
+        let local_pair_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        local_pair_row.append(&local_code);
+        local_pair_row.append(&local_pair);
+        pairing.append(&local_pair_row);
+        session.append(&pairing);
+        let answer = gtk::Label::new(Some("Waiting for context…"));
+        answer.set_xalign(0.0);
+        answer.set_yalign(0.0);
+        answer.set_wrap(true);
+        answer.set_selectable(true);
+        answer.add_css_class("overlay-answer");
+        let streaming_answer = Rc::new(std::cell::RefCell::new(String::new()));
+        let answer_text = Rc::new(std::cell::RefCell::new(String::new()));
+        let answer_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(190)
+            .child(&answer)
+            .build();
+        answer_scroll.add_css_class("hud-answer-flow");
+        session.append(&answer_scroll);
+        let transcript_strip = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        transcript_strip.set_hexpand(true);
+        transcript_strip.add_css_class("hud-inner-panel");
+        let transcript_heading = gtk::Label::new(Some("LIVE TRANSCRIPT"));
+        transcript_heading.add_css_class("overlay-heading");
+        let transcript = gtk::Label::new(Some("No audio detected yet."));
+        transcript.set_xalign(0.0);
+        transcript.set_hexpand(true);
+        transcript.set_single_line_mode(true);
+        transcript.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        transcript.set_selectable(true);
+        transcript.set_tooltip_text(Some("No audio detected yet."));
+        transcript.add_css_class("overlay-transcript");
+        transcript_strip.append(&transcript_heading);
+        transcript_strip.append(&transcript);
+        session.append(&transcript_strip);
+        pages.add_titled(&session, Some("session"), "Session");
+
+        let context_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        context_page.set_margin_top(12);
+        let context_intro = gtk::Label::new(Some(
+            "Add background that should guide answers. Save applies it to this Hyprly session.",
+        ));
+        context_intro.set_wrap(true);
+        context_intro.set_xalign(0.0);
+        context_page.append(&context_intro);
+        let (resume_label, resume) = overlay_context_field(
+            "Resume or experience",
+            "Paste your resume or key experiences",
+            4,
+        );
+        let (job_label, job) = overlay_context_field(
+            "Job description",
+            "Paste the job description or key requirements",
+            4,
+        );
+        let (company_label, company) = overlay_context_field(
+            "Company notes",
+            "Paste company, team, product, or other key details",
+            3,
+        );
+        context_page.append(&resume_label);
+        context_page.append(&overlay_context_upload(&resume.1));
+        context_page.append(&resume.0);
+        context_page.append(&job_label);
+        context_page.append(&overlay_context_upload(&job.1));
+        context_page.append(&job.0);
+        context_page.append(&company_label);
+        context_page.append(&overlay_context_upload(&company.1));
+        context_page.append(&company.0);
+        let context_saved = gtk::Label::new(Some(""));
+        let save_context = gtk::Button::with_label("Save context");
+        save_context.set_halign(gtk::Align::End);
+        let context_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        context_actions.append(&context_saved);
+        context_actions.append(&save_context);
+        context_page.append(&context_actions);
+        pages.add_titled(&context_page, Some("context"), "Context");
+
+        theme.connect_selected_notify({
+            let provider = theme_provider.clone();
+            let connection = connection.clone();
+            move |theme| {
+                overlay_apply_theme(&provider, theme.selected());
+                let name = match theme.selected() {
+                    1 => "paper",
+                    2 => "aurora",
+                    _ => "midnight",
+                };
+                if let Err(error) = crate::config::Config::save_overlay_theme(name) {
+                    connection.set_text(&format!("Could not save theme: {error}"));
+                }
+            }
+        });
+        overlay_apply_theme(&theme_provider, theme.selected());
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &theme_provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
+        pause.connect_clicked({
+            let pause = pause.clone();
+            let paused = Rc::new(std::cell::Cell::new(false));
+            move |_| {
+                let now_paused = !paused.get();
+                paused.set(now_paused);
+                pause.set_label(if now_paused { "Resume" } else { "Pause" });
+                overlay_send(
+                    serde_json::json!({"type": if now_paused { "pause" } else { "resume" }}),
+                );
+            }
+        });
+        clear.connect_clicked({
+            let transcript = transcript.clone();
+            move |_| {
+                transcript.set_text("No audio detected yet.");
+                transcript.set_tooltip_text(Some("No audio detected yet."));
+                overlay_send(serde_json::json!({"type":"clear_transcript"}));
+            }
+        });
+        copy.connect_clicked({
+            let answer_text = answer_text.clone();
+            let connection = connection.clone();
+            move |_| {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    display.clipboard().set_text(&answer_text.borrow());
+                    connection.set_text("Answer copied");
+                }
+            }
+        });
+        save_context.connect_clicked({
+            let resume = resume.1.clone();
+            let job = job.1.clone();
+            let company = company.1.clone();
+            let context_saved = context_saved.clone();
+            move |_| {
+                overlay_send(serde_json::json!({
+                    "type":"update_context",
+                    "resume": overlay_buffer_text(&resume),
+                    "job_description": overlay_buffer_text(&job),
+                    "company": overlay_buffer_text(&company),
+                }));
+                context_saved.set_text("Saved for this session");
+            }
+        });
+        local_pair.connect_clicked({
+            let local_code = local_code.clone();
+            let connection = connection.clone();
+            move |_| overlay_pair_local(&local_code, &connection)
+        });
+        local_code.connect_changed({
+            let connection = connection.clone();
+            move |entry| {
+                if entry.text().len() == 6 {
+                    overlay_pair_local(entry, &connection);
+                }
+            }
+        });
+
+        let window = gtk::ApplicationWindow::builder()
+            .application(application)
+            .title("Hyprly Floating Assistant")
+            .default_width(900)
+            .default_height(460)
+            .child(&root)
+            .build();
+        window.add_css_class("answer-window");
+        window.set_decorated(false);
+        gtk::glib::timeout_add_local(Duration::from_millis(100), {
+            let connection = connection.clone();
+            let transcript = transcript.clone();
+            let answer = answer.clone();
+            let streaming_answer = streaming_answer.clone();
+            let answer_text = answer_text.clone();
+            let copy = copy.clone();
+            let pairing = pairing.clone();
+            move || {
+                while let Ok(event) = event_rx.try_recv() {
+                    match event.get("event").and_then(|value| value.as_str()) {
+                        Some("connection") => {
+                            let connected = event
+                                .get("connected")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
+                            let local = event
+                                .get("local")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
+                            pairing.set_visible(!connected && !local);
+                            connection.set_text(if local {
+                                "Floating session active · phone pairing is optional"
+                            } else if connected {
+                                "Phone paired"
+                            } else {
+                                "Waiting for phone pairing"
+                            });
+                        }
+                        _ => match event.get("type").and_then(|value| value.as_str()) {
+                            Some("status") => {
+                                if let Some(message) =
+                                    event.get("message").and_then(|value| value.as_str())
+                                {
+                                    connection.set_text(message);
+                                }
+                            }
+                            Some("transcript") => {
+                                let text = event
+                                    .get("text")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("");
+                                transcript.set_text(text);
+                                transcript.set_tooltip_text(Some(text));
+                            }
+                            Some("answer_start") => {
+                                streaming_answer.borrow_mut().clear();
+                                answer_text.borrow_mut().clear();
+                                answer.set_text("Thinking…");
+                                copy.set_sensitive(false);
+                            }
+                            Some("answer") => {
+                                streaming_answer.borrow_mut().clear();
+                                let text = event
+                                    .get("text")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("");
+                                *answer_text.borrow_mut() = text.to_string();
+                                answer.set_markup(&answer_to_pango_markup(text));
+                                copy.set_sensitive(!text.is_empty());
+                            }
+                            Some("answer_token") => {
+                                if let Some(token) =
+                                    event.get("text").and_then(|value| value.as_str())
+                                {
+                                    let mut accumulated = streaming_answer.borrow_mut();
+                                    accumulated.push_str(token);
+                                    if let Some(partial) = partial_answer_text(&accumulated) {
+                                        *answer_text.borrow_mut() = partial.clone();
+                                        answer.set_markup(&answer_to_pango_markup(&partial));
+                                        copy.set_sensitive(!partial.is_empty());
+                                    } else if accumulated.is_empty() {
+                                        answer.set_text("Writing answer…");
+                                    }
+                                }
+                            }
+                            Some("topic_reset") => {
+                                streaming_answer.borrow_mut().clear();
+                                answer_text.borrow_mut().clear();
+                                answer.set_text("Waiting for context…");
+                                copy.set_sensitive(false);
+                            }
+                            _ => {}
+                        },
+                    }
+                }
+                gtk::glib::ControlFlow::Continue
+            }
+        });
+        window.present();
+    });
+    application.run_with_args(&["hyprly-answer-overlay"]);
+}
+
+fn overlay_context_field(
+    label: &str,
+    placeholder_text: &str,
+    rows: i32,
+) -> (gtk::Label, (gtk::ScrolledWindow, gtk::TextBuffer)) {
+    let heading = gtk::Label::new(Some(label));
+    heading.set_xalign(0.0);
+    let view = gtk::TextView::new();
+    view.set_wrap_mode(gtk::WrapMode::WordChar);
+    view.set_top_margin(6);
+    view.set_bottom_margin(6);
+    view.set_left_margin(8);
+    view.set_right_margin(8);
+    let buffer = view.buffer();
+    let placeholder = gtk::Label::new(Some(placeholder_text));
+    placeholder.set_halign(gtk::Align::Start);
+    placeholder.set_valign(gtk::Align::Start);
+    placeholder.set_margin_top(12);
+    placeholder.set_margin_start(10);
+    placeholder.set_can_target(false);
+    placeholder.add_css_class("context-placeholder");
+    let input = gtk::Overlay::new();
+    input.set_child(Some(&view));
+    input.add_overlay(&placeholder);
+    buffer.connect_changed({
+        let placeholder = placeholder.clone();
+        move |buffer| {
+            let empty = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                .is_empty();
+            placeholder.set_visible(empty);
+        }
+    });
+    let scroll = gtk::ScrolledWindow::builder()
+        .min_content_height(rows * 28)
+        .child(&input)
+        .build();
+    (heading, (scroll, buffer))
+}
+
+fn overlay_context_upload(buffer: &gtk::TextBuffer) -> gtk::Box {
+    let upload_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    upload_row.add_css_class("context-upload-dropzone");
+    let hint = gtk::Label::new(Some("Drop PDF, DOCX, or TXT here"));
+    hint.set_xalign(0.0);
+    hint.set_hexpand(true);
+    let status = gtk::Label::new(Some(""));
+    status.set_xalign(1.0);
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    status.add_css_class("context-upload-status");
+    let choose = gtk::Button::with_label("Choose file…");
+    upload_row.append(&hint);
+    upload_row.append(&status);
+    upload_row.append(&choose);
+
+    choose.connect_clicked({
+        let buffer = buffer.clone();
+        let status = status.clone();
+        move |_| {
+            let chooser = gtk::FileChooserNative::new(
+                Some("Add context documents"),
+                None::<&gtk::Window>,
+                gtk::FileChooserAction::Open,
+                Some("Add"),
+                Some("Cancel"),
+            );
+            chooser.set_select_multiple(true);
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("PDF, DOCX, and text files"));
+            filter.add_pattern("*.pdf");
+            filter.add_pattern("*.docx");
+            filter.add_pattern("*.txt");
+            chooser.add_filter(&filter);
+            chooser.connect_response({
+                let buffer = buffer.clone();
+                let status = status.clone();
+                move |dialog, response| {
+                    if response == gtk::ResponseType::Accept {
+                        let files = dialog.files();
+                        for index in 0..files.n_items() {
+                            if let Some(file) = files
+                                .item(index)
+                                .and_then(|item| item.downcast::<gtk::gio::File>().ok())
+                            {
+                                overlay_append_context_file(&buffer, &status, &file);
+                            }
+                        }
+                    }
+                    dialog.destroy();
+                }
+            });
+            chooser.show();
+        }
+    });
+
+    let drop_target = gtk::DropTarget::new(
+        gtk::gdk::FileList::static_type(),
+        gtk::gdk::DragAction::COPY,
+    );
+    drop_target.connect_enter({
+        let upload_row = upload_row.clone();
+        move |_, _, _| {
+            upload_row.add_css_class("drop-active");
+            gtk::gdk::DragAction::COPY
+        }
+    });
+    drop_target.connect_leave({
+        let upload_row = upload_row.clone();
+        move |_| upload_row.remove_css_class("drop-active")
+    });
+    drop_target.connect_drop({
+        let buffer = buffer.clone();
+        let status = status.clone();
+        let upload_row = upload_row.clone();
+        move |_, value, _, _| {
+            upload_row.remove_css_class("drop-active");
+            let Ok(files) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+            for file in files.files() {
+                overlay_append_context_file(&buffer, &status, &file);
+            }
+            true
+        }
+    });
+    upload_row.add_controller(drop_target);
+    upload_row
+}
+
+fn overlay_append_context_file(
+    buffer: &gtk::TextBuffer,
+    status: &gtk::Label,
+    file: &gtk::gio::File,
+) {
+    let Some(path) = file.path() else {
+        status.set_text("Choose a local file");
+        return;
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("document");
+    status.set_text(&format!("Reading {name}…"));
+    match overlay_extract_context_file(&path) {
+        Ok(text) if !text.trim().is_empty() => {
+            let existing = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            let joined = [existing.trim(), text.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            buffer.set_text(&joined);
+            status.set_text(&format!("Loaded text from {name}"));
+        }
+        Ok(_) => status.set_text(&format!("{name}: no readable text found")),
+        Err(error) => status.set_text(&format!("{name}: {error}")),
+    }
+}
+
+fn overlay_extract_context_file(path: &std::path::Path) -> Result<String> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "txt" => std::fs::read_to_string(path).context("could not read text file"),
+        "pdf" => {
+            let output = Command::new("pdftotext")
+                .args(["-layout"])
+                .arg(path)
+                .arg("-")
+                .output()
+                .context("PDF upload requires pdftotext (Poppler)")?;
+            if !output.status.success() {
+                anyhow::bail!("could not extract text from PDF");
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        "docx" => {
+            let output = Command::new("unzip")
+                .args(["-p"])
+                .arg(path)
+                .arg("word/document.xml")
+                .output()
+                .context("DOCX upload requires unzip")?;
+            if !output.status.success() {
+                anyhow::bail!("could not extract text from DOCX");
+            }
+            Ok(overlay_docx_xml_text(&String::from_utf8_lossy(
+                &output.stdout,
+            )))
+        }
+        _ => anyhow::bail!("choose a PDF, DOCX, or TXT file"),
+    }
+}
+
+fn overlay_docx_xml_text(xml: &str) -> String {
+    let mut text = String::new();
+    let mut rest = xml;
+    while let Some(tag_start) = rest.find('<') {
+        rest = &rest[tag_start..];
+        if rest.starts_with("</w:p") {
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+        } else if rest.starts_with("<w:t") {
+            if let Some(tag_end) = rest.find('>') {
+                let content = &rest[tag_end + 1..];
+                if let Some(text_end) = content.find("</w:t>") {
+                    text.push_str(&overlay_decode_xml_entities(&content[..text_end]));
+                    rest = &content[text_end + "</w:t>".len()..];
+                    continue;
+                }
+            }
+        }
+        if let Some(tag_end) = rest.find('>') {
+            rest = &rest[tag_end + 1..];
+        } else {
+            break;
+        }
+    }
+    text.trim().to_string()
+}
+
+fn overlay_decode_xml_entities(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+fn overlay_buffer_text(buffer: &gtk::TextBuffer) -> String {
+    buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string()
+}
+
+fn overlay_apply_theme(provider: &gtk::CssProvider, selected: u32) {
+    let base_css = match selected {
+        1 => ".overlay-root { background: rgba(244, 241, 234, 0.96); color: #20231f; padding: 12px; } .overlay-island { background: rgba(255, 255, 255, 0.86); border: 1px solid rgba(32, 35, 31, 0.12); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(255,255,255,0.94), rgba(255,253,248,0.90)); border: 1px solid rgba(32,35,31,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(32,35,31,0.04); border: 1px solid rgba(32,35,31,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #31513e; } .overlay-status { color: #49634f; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,253,248,0.96); border: 1px solid rgba(32,35,31,0.10); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38a6d8; } .overlay-transcript, .overlay-answer { color: #20231f; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
+        2 => ".overlay-root { background: rgba(17, 33, 40, 0.96); color: #e5fbf5; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #77e0c2; } .overlay-status { color: #9dd6c6; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #e5fbf5; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
+        _ => ".overlay-root { background: rgba(11, 14, 20, 0.94); color: #f1f5f9; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #7dd3fc; } .overlay-status { color: #a1a1aa; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #f1f5f9; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
+    };
+    let translucent_surface = if selected == 1 {
+        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(255,255,255,0.58), rgba(255,253,248,0.42)); }"
+    } else {
+        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.20), rgba(13,16,23,0.42)); }"
+    };
+    let css = format!(
+        "{base_css} {translucent_surface} window.answer-window {{ background: transparent; }} .overlay-root {{ background: transparent; border: 1px solid rgba(255,255,255,0.16); border-radius: 26px; padding-bottom: 0; }} .hud-card {{ padding-bottom: 0; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 2px; }} .overlay-answer {{ background: transparent; padding: 6px 2px; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
+    );
+    provider.load_from_data(&css);
+}
+
+fn answer_to_pango_markup(text: &str) -> String {
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(fence_start) = remaining.find("```") {
+        output.push_str(&inline_code_markup(&remaining[..fence_start]));
+        let after_fence = &remaining[fence_start + 3..];
+        if let Some(fence_end) = after_fence.find("```") {
+            let fenced = &after_fence[..fence_end];
+            let code = fenced
+                .find('\n')
+                .map(|newline| &fenced[newline + 1..])
+                .unwrap_or(fenced)
+                .trim_matches('\n');
+            output.push_str(
+                "<span font_family=\"monospace\" foreground=\"#e2e8f0\" background=\"#263244\">",
+            );
+            output.push_str(&escape_pango_text(code));
+            output.push_str("</span>");
+            remaining = &after_fence[fence_end + 3..];
+        } else {
+            output.push_str(
+                "<span font_family=\"monospace\" foreground=\"#e2e8f0\" background=\"#263244\">",
+            );
+            let code = after_fence
+                .find('\n')
+                .map(|newline| &after_fence[newline + 1..])
+                .unwrap_or(after_fence)
+                .trim_matches('\n');
+            output.push_str(&escape_pango_text(code));
+            output.push_str("</span>");
+            remaining = "";
+        }
+    }
+    output.push_str(&inline_code_markup(remaining));
+    output
+}
+
+fn inline_code_markup(text: &str) -> String {
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(code_start) = remaining.find('`') {
+        output.push_str(&escape_pango_text(&remaining[..code_start]));
+        let after_tick = &remaining[code_start + 1..];
+        if let Some(code_end) = after_tick.find('`') {
+            output.push_str(
+                "<span font_family=\"monospace\" foreground=\"#e2e8f0\" background=\"#263244\">",
+            );
+            output.push_str(&escape_pango_text(&after_tick[..code_end]));
+            output.push_str("</span>");
+            remaining = &after_tick[code_end + 1..];
+        } else {
+            output.push_str(&escape_pango_text(remaining));
+            return output;
+        }
+    }
+    output.push_str(&escape_pango_text(remaining));
+    output
+}
+
+fn escape_pango_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn partial_answer_text(stream: &str) -> Option<String> {
+    let marker = "\"answer\"";
+    let start = stream.find(marker)? + marker.len();
+    let colon = stream[start..].find(':')? + start + 1;
+    let quote = stream[colon..].find('"')? + colon;
+    let mut escaped = false;
+    let mut end = stream.len();
+    for (offset, character) in stream[quote + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => {
+                end = quote + 1 + offset;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let encoded = format!("\"{}\"", &stream[quote + 1..end]);
+    serde_json::from_str(&encoded).ok()
+}
+
+fn overlay_send(event: serde_json::Value) {
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    if serde_json::to_writer(&mut output, &event).is_ok() {
+        let _ = output.write_all(b"\n");
+        let _ = output.flush();
+    }
+}
+
+fn overlay_pair_local(code: &gtk::Entry, status: &gtk::Label) {
+    overlay_send(serde_json::json!({
+        "type":"pair_local",
+        "code":code.text().as_str(),
+    }));
+    status.set_text("Checking pairing code…");
 }
 
 fn build_window(application: &gtk::Application) {
@@ -402,9 +1189,30 @@ fn build_window(application: &gtk::Application) {
     connect.add_css_class("suggested-action");
     let disconnect = gtk::Button::with_label("Disconnect");
     disconnect.set_sensitive(false);
+    let answer_target = gtk::DropDown::from_strings(&[
+        "Paired webpage",
+        "Floating window",
+        "Webpage + floating window",
+    ]);
+    let saved_answer_target = crate::config::Config::load()
+        .map(|config| config.screen.answer_target)
+        .unwrap_or_else(|_| "webpage".to_string());
+    answer_target.set_selected(match saved_answer_target.as_str() {
+        "floating" => 1,
+        "both" => 2,
+        _ => 0,
+    });
+    answer_target.set_tooltip_text(Some(
+        "Choose whether Hyprly sends transcription and answers to the webpage, floating window, or both.",
+    ));
+    let output_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    output_row.set_halign(gtk::Align::Start);
+    output_row.append(&gtk::Label::new(Some("Answer window")));
+    output_row.append(&answer_target);
     connection_actions.append(&connect);
     connection_actions.append(&disconnect);
     connection_actions.add_css_class("connection-actions");
+    root.append(&output_row);
     root.append(&connection_actions);
     status.add_css_class("status-line");
     root.append(&status);
@@ -439,9 +1247,11 @@ fn build_window(application: &gtk::Application) {
         update_label,
         update_link,
         child: None,
+        overlay_child: None,
         paired: false,
         screen_pid: None,
         backend_stdin: None,
+        overlay_stdin: None,
         event_tx,
         event_rx,
         tray_rx,
@@ -537,6 +1347,25 @@ fn build_window(application: &gtk::Application) {
         let state = state.clone();
         move |_| stop_backend(&state)
     });
+    answer_target.connect_selected_notify({
+        let state = state.clone();
+        move |target| {
+            let value = match target.selected() {
+                1 => "floating",
+                2 => "both",
+                _ => "webpage",
+            };
+            let status = state.borrow().status.clone();
+            match crate::config::Config::save_answer_target(value) {
+                Ok(()) if state.borrow().child.is_some() => status
+                    .set_text("Answer destination saved. Disconnect and reconnect to apply it."),
+                Ok(()) => status.set_text("Answer destination saved."),
+                Err(error) => {
+                    status.set_text(&format!("Could not save answer destination: {error}"))
+                }
+            }
+        }
+    });
     window.connect_close_request({
         let window = window.clone();
         move |_| {
@@ -591,6 +1420,29 @@ fn create_wordmark_surface(theme: &str) -> gtk::cairo::ImageSurface {
         source_width as i32 * 4,
     )
     .expect("wordmark image surface can be created")
+}
+
+fn create_logo_surface() -> gtk::cairo::ImageSurface {
+    let (width, height, source) =
+        decode_png(include_bytes!("../assets/logo.png")).expect("Hyprly logo PNG is valid");
+    let mut argb = Vec::with_capacity(source.len());
+    for rgba in source.as_chunks::<4>().0 {
+        let alpha = rgba[3] as u16;
+        let red = rgba[0] as u16 * alpha / 255;
+        let green = rgba[1] as u16 * alpha / 255;
+        let blue = rgba[2] as u16 * alpha / 255;
+        argb.extend_from_slice(
+            &u32::from_be_bytes([alpha as u8, red as u8, green as u8, blue as u8]).to_ne_bytes(),
+        );
+    }
+    gtk::cairo::ImageSurface::create_for_data(
+        argb,
+        gtk::cairo::Format::ARgb32,
+        width as i32,
+        height as i32,
+        width as i32 * 4,
+    )
+    .expect("logo image surface can be created")
 }
 
 fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
@@ -956,6 +1808,9 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
             if response == gtk::ResponseType::Accept {
                 let mut updated = config.clone();
                 updated.screen.mouse_gesture = state.borrow().screen_trigger.clone();
+                updated.screen.answer_target = crate::config::Config::load()
+                    .map(|current| current.screen.answer_target)
+                    .unwrap_or_else(|_| updated.screen.answer_target.clone());
                 let configured_vision_model = vision_model.text().trim().to_string();
                 if !configured_vision_model.is_empty() {
                     updated.screen.vision_model = configured_vision_model;
@@ -1344,13 +2199,18 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
             return;
         }
     };
-    let mut child = match Command::new(executable)
+    let answer_target = crate::config::Config::load()
+        .map(|config| config.screen.answer_target)
+        .unwrap_or_else(|_| "webpage".to_string());
+    let use_overlay = matches!(answer_target.as_str(), "floating" | "both");
+    let mut command = Command::new(executable);
+    command
         .arg("daemon")
+        .env("HYPRLY_BACKEND_MODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             state
@@ -1364,16 +2224,34 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
         .stdin
         .take()
         .map(|stdin| std::sync::Arc::new(std::sync::Mutex::new(stdin)));
+    let (overlay_child, overlay_stdin) = if use_overlay {
+        match spawn_answer_overlay(backend_stdin.clone()) {
+            Ok(overlay) => (Some(overlay.0), overlay.1),
+            Err(error) => {
+                let _ = child.kill();
+                state.borrow().status.set_text(&format!(
+                    "Could not start the private answer window: {error}"
+                ));
+                return;
+            }
+        }
+    } else {
+        (None, None)
+    };
 
     let event_tx = state.borrow().event_tx.clone();
     if let Some(stdout) = child.stdout.take() {
         let event_tx = event_tx.clone();
+        let overlay_events = overlay_stdin.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
                     continue;
                 };
                 let event = value.get("event").and_then(|v| v.as_str());
+                if let Some(overlay_stdin) = &overlay_events {
+                    let _ = send_backend_event(overlay_stdin, value.clone());
+                }
                 if event == Some("connection") {
                     let _ = event_tx.send(UiEvent::Connection(
                         value
@@ -1424,8 +2302,10 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 
     let mut state_ref = state.borrow_mut();
     state_ref.child = Some(child);
+    state_ref.overlay_child = overlay_child;
     state_ref.paired = false;
     state_ref.backend_stdin = backend_stdin;
+    state_ref.overlay_stdin = overlay_stdin;
     state_ref.connect_button.set_sensitive(false);
     state_ref.disconnect_button.set_sensitive(true);
     state_ref
@@ -1435,22 +2315,63 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 
 fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     stop_screen_process(&mut state.borrow_mut());
-    let (child, _) = {
+    let (child, overlay_child) = {
         let mut state = state.borrow_mut();
-        (state.child.take(), state.backend_stdin.take())
+        state.backend_stdin.take();
+        state.overlay_stdin.take();
+        (state.child.take(), state.overlay_child.take())
     };
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
+    reap_child(child);
+    reap_child(overlay_child);
     clear_pairing(state);
     state.borrow_mut().paired = false;
     let state_ref = state.borrow();
     state_ref.connect_button.set_sensitive(true);
     state_ref.disconnect_button.set_sensitive(false);
     state_ref.status.set_text("Hyprly is disconnected.");
+}
+
+fn spawn_answer_overlay(
+    backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
+) -> Result<(
+    Child,
+    Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
+)> {
+    let backend_stdin = backend_stdin.context("Backend input is unavailable")?;
+    let executable = std::env::current_exe().context("Could not locate Hyprly")?;
+    let mut child = Command::new(executable)
+        .arg("answer-overlay")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Could not launch the GTK answer overlay")?;
+    let Some(stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        anyhow::bail!("The answer overlay did not provide an input pipe");
+    };
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let _ = send_backend_event(&backend_stdin, event);
+                }
+            }
+        });
+    }
+    Ok((
+        child,
+        Some(std::sync::Arc::new(std::sync::Mutex::new(stdin))),
+    ))
+}
+
+fn reap_child(child: Option<Child>) {
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 fn clear_pairing(state: &Rc<std::cell::RefCell<AppState>>) {
@@ -1493,7 +2414,14 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
         .and_then(|child| child.try_wait().ok().flatten());
     if exited.is_some() {
         stop_screen_process(&mut state.borrow_mut());
-        state.borrow_mut().child = None;
+        let overlay = {
+            let mut state_ref = state.borrow_mut();
+            state_ref.child = None;
+            state_ref.backend_stdin.take();
+            state_ref.overlay_stdin.take();
+            state_ref.overlay_child.take()
+        };
+        reap_child(overlay);
         clear_pairing(state);
         state.borrow_mut().paired = false;
         let state_ref = state.borrow();
@@ -1735,10 +2663,9 @@ fn launch_screen_question(state: &Rc<std::cell::RefCell<AppState>>) {
         Ok(child) => {
             let pid = child.id();
             state.borrow_mut().screen_pid = Some(pid);
-            state
-                .borrow()
-                .status
-                .set_text("Screen question started. The answer will appear on the paired webpage.");
+            state.borrow().status.set_text(
+                "Screen question started. The answer will appear here and on the paired webpage.",
+            );
             let events = state.borrow().event_tx.clone();
             std::thread::spawn(move || {
                 match child.wait_with_output() {

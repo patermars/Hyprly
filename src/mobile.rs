@@ -49,6 +49,7 @@ pub struct MobileHub {
     server_certificate: Arc<String>,
     server_key: Arc<String>,
     connected_clients: Arc<AtomicUsize>,
+    local_connected: Arc<AtomicBool>,
     connected: watch::Sender<bool>,
 }
 
@@ -89,6 +90,7 @@ impl MobileHub {
             server_certificate: Arc::new(server_certificate),
             server_key: Arc::new(server_key),
             connected_clients: Arc::new(AtomicUsize::new(0)),
+            local_connected: Arc::new(AtomicBool::new(false)),
             connected,
         })
     }
@@ -170,6 +172,37 @@ impl MobileHub {
 
     pub fn subscribe_commands(&self) -> broadcast::Receiver<MobileCommand> {
         self.commands.subscribe()
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<String> {
+        self.events.subscribe()
+    }
+
+    pub fn set_local_connected(&self, connected: bool) {
+        self.local_connected.store(connected, Ordering::Relaxed);
+        self.connected
+            .send_replace(connected || self.connected_clients.load(Ordering::Relaxed) > 0);
+    }
+
+    pub fn pair_local(&self, code: &str) -> bool {
+        if code.trim() != self.code.as_str() {
+            return false;
+        }
+        self.set_local_connected(true);
+        true
+    }
+
+    pub fn local_is_connected(&self) -> bool {
+        self.local_connected.load(Ordering::Relaxed)
+    }
+
+    pub fn command(&self, command: MobileCommand) {
+        match command {
+            MobileCommand::Pause => self.paused.store(true, Ordering::Relaxed),
+            MobileCommand::Resume => self.paused.store(false, Ordering::Relaxed),
+            _ => {}
+        }
+        let _ = self.commands.send(command);
     }
 
     pub fn subscribe_connection(&self) -> watch::Receiver<bool> {
@@ -503,7 +536,8 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
         }
     }
     if hub.connected_clients.fetch_sub(1, Ordering::Relaxed) == 1 {
-        hub.connected.send_replace(false);
+        hub.connected
+            .send_replace(hub.local_connected.load(Ordering::Relaxed));
     }
 }
 
