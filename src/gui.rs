@@ -266,16 +266,6 @@ pub fn run_answer_overlay() {
             let _ = context.set_source_surface(&logo_surface, 0.0, 0.0);
             let _ = context.paint();
         });
-        let theme = gtk::DropDown::from_strings(&["Midnight", "Paper", "Aurora"]);
-        theme.set_tooltip_text(Some("Choose appearance"));
-        let saved_theme = crate::config::Config::load()
-            .map(|config| config.screen.overlay_theme)
-            .unwrap_or_else(|_| "midnight".to_string());
-        theme.set_selected(match saved_theme.as_str() {
-            "paper" => 1,
-            "aurora" => 2,
-            _ => 0,
-        });
         let connection = gtk::Label::new(Some("Waiting for Hyprly…"));
         connection.set_hexpand(true);
         connection.set_xalign(0.0);
@@ -284,6 +274,9 @@ pub fn run_answer_overlay() {
         pause.add_css_class("overlay-control");
         let clear = gtk::Button::with_label("Clear");
         clear.add_css_class("overlay-control");
+        let minimize = gtk::Button::from_icon_name("window-close-symbolic");
+        minimize.set_tooltip_text(Some("Minimize floating window"));
+        minimize.add_css_class("overlay-control");
         let copy_code = gtk::Button::with_label("Copy code");
         copy_code.add_css_class("overlay-control");
         copy_code.set_visible(false);
@@ -292,8 +285,7 @@ pub fn run_answer_overlay() {
         header.append(&connection);
         header.append(&pause);
         header.append(&clear);
-        header.append(&gtk::Label::new(Some("Theme")));
-        header.append(&theme);
+        header.append(&minimize);
         root.append(&header);
 
         root.append(&pages);
@@ -424,22 +416,7 @@ pub fn run_answer_overlay() {
         context_scroll.set_propagate_natural_height(false);
         pages.add_titled(&context_scroll, Some("context"), "Context");
 
-        theme.connect_selected_notify({
-            let provider = theme_provider.clone();
-            let connection = connection.clone();
-            move |theme| {
-                overlay_apply_theme(&provider, theme.selected());
-                let name = match theme.selected() {
-                    1 => "paper",
-                    2 => "aurora",
-                    _ => "midnight",
-                };
-                if let Err(error) = crate::config::Config::save_overlay_theme(name) {
-                    connection.set_text(&format!("Could not save theme: {error}"));
-                }
-            }
-        });
-        overlay_apply_theme(&theme_provider, theme.selected());
+        overlay_apply_style(&theme_provider);
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
                 &display,
@@ -525,8 +502,82 @@ pub fn run_answer_overlay() {
             saved_overlay_size.min_width as i32,
             saved_overlay_size.min_height as i32,
         );
+        let launcher_logo = gtk::DrawingArea::builder()
+            .content_width(64)
+            .content_height(64)
+            .build();
+        launcher_logo.set_size_request(64, 64);
+        let launcher_logo_surface = create_logo_surface();
+        launcher_logo.set_draw_func(move |_, context, width, height| {
+            let scale = (width as f64 / launcher_logo_surface.width() as f64)
+                .min(height as f64 / launcher_logo_surface.height() as f64);
+            let x = (width as f64 - launcher_logo_surface.width() as f64 * scale) / 2.0;
+            let y = (height as f64 - launcher_logo_surface.height() as f64 * scale) / 2.0;
+            context.translate(x, y);
+            context.scale(scale, scale);
+            let _ = context.set_source_surface(&launcher_logo_surface, 0.0, 0.0);
+            let _ = context.paint();
+        });
+        let launcher_button = gtk::Button::new();
+        launcher_button.set_child(Some(&launcher_logo));
+        launcher_button.add_css_class("overlay-launcher");
+        launcher_button.set_tooltip_text(Some("Open Hyprly floating assistant"));
+        let launcher = gtk::ApplicationWindow::builder()
+            .application(application)
+            .title("Hyprly Floating Launcher")
+            .default_width(64)
+            .default_height(64)
+            .child(&launcher_button)
+            .build();
+        launcher.add_css_class("overlay-launcher-window");
+        launcher.set_decorated(false);
+        launcher.set_resizable(false);
+        launcher.set_size_request(64, 64);
+        launcher.set_opacity(0.0);
+        let launcher_position = Rc::new(std::cell::Cell::new(
+            saved_overlay_size
+                .position_x
+                .zip(saved_overlay_size.position_y),
+        ));
+        minimize.connect_clicked({
+            let window = window.clone();
+            let launcher = launcher.clone();
+            let overlay_is_visible = overlay_is_visible.clone();
+            let launcher_position = launcher_position.clone();
+            move |_| {
+                if !overlay_is_visible.replace(false) {
+                    return;
+                }
+                let position = hyprland_window_position("Hyprly Floating Assistant")
+                    .ok()
+                    .or_else(|| {
+                        saved_overlay_size
+                            .position_x
+                            .zip(saved_overlay_size.position_y)
+                    });
+                launcher_position.set(position);
+                launcher.set_opacity(0.0);
+                launcher.present();
+                schedule_floating_window_placement_for("Hyprly Floating Launcher", position);
+                animate_overlay_transition(&window, &launcher, saved_overlay_size, false);
+            }
+        });
+        launcher_button.connect_clicked({
+            let window = window.clone();
+            let launcher = launcher.clone();
+            let overlay_is_visible = overlay_is_visible.clone();
+            let launcher_position = launcher_position.clone();
+            move |_| {
+                if overlay_is_visible.replace(true) {
+                    return;
+                }
+                animate_overlay_transition(&window, &launcher, saved_overlay_size, true);
+                schedule_floating_window_placement(launcher_position.get());
+            }
+        });
         gtk::glib::timeout_add_local(Duration::from_millis(100), {
             let window = window.clone();
+            let launcher = launcher.clone();
             let connection = connection.clone();
             let transcript = transcript.clone();
             let answer = answer.clone();
@@ -567,7 +618,13 @@ pub fn run_answer_overlay() {
                                 let should_be_visible = matches!(target, "floating" | "both");
                                 if should_be_visible {
                                     let was_visible = overlay_is_visible.replace(true);
+                                    launcher.set_visible(false);
                                     window.set_visible(true);
+                                    window.set_opacity(1.0);
+                                    window.set_size_request(
+                                        overlay_size.borrow().min_width as i32,
+                                        overlay_size.borrow().min_height as i32,
+                                    );
                                     if !was_visible {
                                         let size = *overlay_size.borrow();
                                         schedule_floating_window_placement(
@@ -577,6 +634,7 @@ pub fn run_answer_overlay() {
                                 } else {
                                     overlay_is_visible.set(false);
                                     window.set_visible(false);
+                                    launcher.set_visible(false);
                                 }
                             }
                             Some("overlay_window_size") => {
@@ -948,19 +1006,11 @@ fn overlay_buffer_text(buffer: &gtk::TextBuffer) -> String {
         .to_string()
 }
 
-fn overlay_apply_theme(provider: &gtk::CssProvider, selected: u32) {
-    let base_css = match selected {
-        1 => ".overlay-root { background: rgba(244, 241, 234, 0.96); color: #20231f; padding: 12px; } .overlay-island { background: rgba(255, 255, 255, 0.86); border: 1px solid rgba(32, 35, 31, 0.12); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(255,255,255,0.94), rgba(255,253,248,0.90)); border: 1px solid rgba(32,35,31,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(32,35,31,0.04); border: 1px solid rgba(32,35,31,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #31513e; } .overlay-status { color: #49634f; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,253,248,0.96); border: 1px solid rgba(32,35,31,0.10); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38a6d8; } .overlay-transcript, .overlay-answer { color: #20231f; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
-        2 => ".overlay-root { background: rgba(17, 33, 40, 0.96); color: #e5fbf5; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #77e0c2; } .overlay-status { color: #9dd6c6; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #e5fbf5; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
-        _ => ".overlay-root { background: rgba(11, 14, 20, 0.94); color: #f1f5f9; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #7dd3fc; } .overlay-status { color: #a1a1aa; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #f1f5f9; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
-    };
-    let translucent_surface = if selected == 1 {
-        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(202,205,210,0.48), rgba(176,180,186,0.40)); }"
-    } else {
-        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(82,86,94,0.30), rgba(48,51,57,0.50)); }"
-    };
+fn overlay_apply_style(provider: &gtk::CssProvider) {
+    let base_css = ".overlay-root { background: rgba(11, 14, 20, 0.94); color: #f1f5f9; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #7dd3fc; } .overlay-status { color: #a1a1aa; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #f1f5f9; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }";
+    let translucent_surface = ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(82,86,94,0.30), rgba(48,51,57,0.50)); }";
     let css = format!(
-        "{base_css} {translucent_surface} window.answer-window {{ background: transparent; }} .overlay-root {{ background: transparent; border: none; border-radius: 0; padding: 0; }} .hud-card {{ padding: 2px; border: none; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 0; }} .overlay-answer {{ background: transparent; padding: 2px 0; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
+        "{base_css} {translucent_surface} window.answer-window, window.overlay-launcher-window {{ background: transparent; }} button.overlay-launcher {{ min-width: 64px; min-height: 64px; padding: 0; border: 1px solid rgba(125,211,252,0.48); border-radius: 999px; background: rgba(18,21,30,0.96); box-shadow: 0 4px 18px rgba(0,0,0,0.36); }} button.overlay-launcher:hover {{ background: rgba(30,37,51,0.98); }} .overlay-root {{ background: transparent; border: none; border-radius: 0; padding: 0; }} .hud-card {{ padding: 2px; border: none; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 0; }} .overlay-answer {{ background: transparent; padding: 2px 0; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
     );
     provider.load_from_data(&css);
 }
@@ -1720,16 +1770,81 @@ fn hyprland_position_from_info(
     Ok((x, y))
 }
 
+fn animate_overlay_transition(
+    window: &gtk::ApplicationWindow,
+    launcher: &gtk::ApplicationWindow,
+    size: crate::config::OverlayWindowConfig,
+    showing: bool,
+) {
+    const ICON_SIZE: i32 = 64;
+    const DURATION: Duration = Duration::from_millis(240);
+
+    let (start_width, start_height, end_width, end_height) = if showing {
+        window.set_size_request(ICON_SIZE, ICON_SIZE);
+        window.set_default_size(ICON_SIZE, ICON_SIZE);
+        window.set_opacity(0.0);
+        window.present();
+        launcher.set_opacity(1.0);
+        (
+            ICON_SIZE,
+            ICON_SIZE,
+            size.width as i32,
+            size.height as i32,
+        )
+    } else {
+        (
+            size.width as i32,
+            size.height as i32,
+            ICON_SIZE,
+            ICON_SIZE,
+        )
+    };
+    let started = std::time::Instant::now();
+    let window = window.clone();
+    let launcher = launcher.clone();
+    gtk::glib::timeout_add_local(Duration::from_millis(16), move || {
+        let progress = (started.elapsed().as_secs_f64() / DURATION.as_secs_f64()).min(1.0);
+        let eased = progress * progress * (3.0 - 2.0 * progress);
+        let width = (start_width as f64 + (end_width - start_width) as f64 * eased).round() as i32;
+        let height =
+            (start_height as f64 + (end_height - start_height) as f64 * eased).round() as i32;
+        window.set_size_request(width, height);
+        window.set_default_size(width, height);
+        window.set_opacity(if showing { progress } else { 1.0 - progress });
+        launcher.set_opacity(if showing { 1.0 - progress } else { progress });
+        if progress >= 1.0 {
+            if showing {
+                launcher.set_visible(false);
+                window.set_size_request(size.min_width as i32, size.min_height as i32);
+                window.set_default_size(size.width as i32, size.height as i32);
+                window.set_opacity(1.0);
+            } else {
+                window.set_visible(false);
+                window.set_size_request(ICON_SIZE, ICON_SIZE);
+                window.set_default_size(ICON_SIZE, ICON_SIZE);
+                window.set_opacity(1.0);
+                launcher.set_opacity(1.0);
+            }
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Continue
+        }
+    });
+}
+
 fn schedule_floating_window_placement(position: Option<(i32, i32)>) {
+    schedule_floating_window_placement_for("Hyprly Floating Assistant", position);
+}
+
+fn schedule_floating_window_placement_for(title: &'static str, position: Option<(i32, i32)>) {
     gtk::glib::timeout_add_local_once(Duration::from_millis(300), move || {
-        if let Err(error) = place_floating_window(position) {
+        if let Err(error) = place_floating_window_for(title, position) {
             eprintln!("Hyprly: could not apply floating answer window position: {error}");
         }
     });
 }
 
-fn place_floating_window(position: Option<(i32, i32)>) -> Result<()> {
-    let title = "Hyprly Floating Assistant";
+fn place_floating_window_for(title: &str, position: Option<(i32, i32)>) -> Result<()> {
     let window = hyprland_window_info(title)?;
     let address = window
         .get("address")
@@ -1746,6 +1861,20 @@ fn place_floating_window(position: Option<(i32, i32)>) -> Result<()> {
         ))?;
     } else {
         hyprland_dispatch("setfloating", Some(&selector))?;
+    }
+
+    // Both the assistant and its launcher share this verified Hyprland class.
+    // Apply the border override by class so the round launcher stays borderless.
+    if uses_lua_dispatch {
+        hyprland_lua_dispatch(&format!(
+            "hl.dsp.window.set_prop({{ prop = \"border_size\", value = \"0\", window = \"class:io.github.patermars.HyprlyScreenTest\" }})"
+        ))?;
+    } else {
+        hyprland_setprop(
+            "class:io.github.patermars.HyprlyScreenTest",
+            "bordersize",
+            "0",
+        )?;
     }
 
     if let Some(expected) = position {
@@ -1842,6 +1971,21 @@ fn hyprland_dispatch(dispatcher: &str, argument: Option<&str>) -> Result<()> {
     if !output.status.success() {
         anyhow::bail!(
             "Hyprland rejected `{dispatcher}`: {}{}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    Ok(())
+}
+
+fn hyprland_setprop(window: &str, property: &str, value: &str) -> Result<()> {
+    let output = Command::new("hyprctl")
+        .args(["setprop", window, property, value])
+        .output()
+        .context("could not run a window property update through `hyprctl`")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Hyprland rejected window property `{property}`: {}{}",
             String::from_utf8_lossy(&output.stderr).trim(),
             String::from_utf8_lossy(&output.stdout).trim()
         );
@@ -2236,15 +2380,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
             preview.set_decorated(true);
             preview.set_resizable(true);
             let preview_theme = gtk::CssProvider::new();
-            let theme = crate::config::Config::load()
-                .map(|config| config.screen.overlay_theme)
-                .unwrap_or_else(|_| "midnight".to_string());
-            let theme_index = match theme.as_str() {
-                "paper" => 1,
-                "aurora" => 2,
-                _ => 0,
-            };
-            overlay_apply_theme(&preview_theme, theme_index);
+            overlay_apply_style(&preview_theme);
             if let Some(display) = gtk::gdk::Display::default() {
                 gtk::style_context_add_provider_for_display(
                     &display,

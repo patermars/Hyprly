@@ -36,7 +36,6 @@ endpoint_silence_ms = 500
 [screen]
 vision_model = "qwen/qwen3.8-27b"
 answer_target = "webpage"
-overlay_theme = "midnight"
 
 # Window sizes are GTK logical pixels. The compositor may scale them to
 # physical display pixels according to the monitor's scale setting.
