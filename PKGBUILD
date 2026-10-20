@@ -44,5 +44,7 @@ package() {
     install -Dm755 target/release/hyprly "$pkgdir/usr/bin/hyprly"
     install -Dm644 data/hyprly.desktop "$pkgdir/usr/share/applications/hyprly.desktop"
     install -Dm644 assets/logo.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/logo.png"
+    install -Dm644 assets/icons/*.svg -t "$pkgdir/usr/share/hyprly/icons"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 assets/icons/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LUCIDE-LICENSE"
 }

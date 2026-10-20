@@ -166,7 +166,7 @@ fn run_daemon() -> Result<()> {
 
     let config = config::Config::load()?;
     let context = context::ContextStore::load(&config.context, &config::Config::config_path());
-    let mobile_hub = mobile::MobileHub::new()?;
+    let mobile_hub = mobile::MobileHub::new(&config.screen.answer_target)?;
     println!("{}", mobile_hub.pairing_info());
     use std::io::Write;
     std::io::stdout().flush()?;
@@ -222,6 +222,11 @@ fn run_daemon() -> Result<()> {
                             .and_then(|value| value.as_str())
                             .unwrap_or("Screen question failed");
                         screen_hub.status("error", message);
+                    }
+                    Some("answer_target") => {
+                        if let Some(target) = event.get("target").and_then(|value| value.as_str()) {
+                            screen_hub.set_answer_target(target);
+                        }
                     }
                     Some("pair_local") => {
                         let code = event.get("code").and_then(|value| value.as_str()).unwrap_or("");

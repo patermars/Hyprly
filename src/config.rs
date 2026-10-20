@@ -33,6 +33,67 @@ pub struct ScreenConfig {
     pub answer_target: String,
     #[serde(default = "default_overlay_theme")]
     pub overlay_theme: String,
+    #[serde(default)]
+    pub overlay_window: OverlayWindowConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
+pub struct OverlayWindowConfig {
+    #[serde(default = "default_overlay_min_width")]
+    pub min_width: u32,
+    #[serde(default = "default_overlay_width")]
+    pub width: u32,
+    #[serde(default = "default_overlay_max_width")]
+    pub max_width: u32,
+    #[serde(default = "default_overlay_min_height")]
+    pub min_height: u32,
+    #[serde(default = "default_overlay_height")]
+    pub height: u32,
+    #[serde(default = "default_overlay_max_height")]
+    pub max_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<i32>,
+}
+
+impl Default for OverlayWindowConfig {
+    fn default() -> Self {
+        Self {
+            min_width: default_overlay_min_width(),
+            width: default_overlay_width(),
+            max_width: default_overlay_max_width(),
+            min_height: default_overlay_min_height(),
+            height: default_overlay_height(),
+            max_height: default_overlay_max_height(),
+            position_x: None,
+            position_y: None,
+        }
+    }
+}
+
+fn default_overlay_min_width() -> u32 {
+    320
+}
+
+fn default_overlay_width() -> u32 {
+    643
+}
+
+fn default_overlay_max_width() -> u32 {
+    1200
+}
+
+fn default_overlay_min_height() -> u32 {
+    120
+}
+
+fn default_overlay_height() -> u32 {
+    189
+}
+
+fn default_overlay_max_height() -> u32 {
+    378
 }
 
 fn default_answer_target() -> String {
@@ -50,6 +111,7 @@ impl Default for ScreenConfig {
             mouse_gesture: None,
             answer_target: default_answer_target(),
             overlay_theme: default_overlay_theme(),
+            overlay_window: OverlayWindowConfig::default(),
         }
     }
 }

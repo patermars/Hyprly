@@ -16,6 +16,8 @@ use std::{
 
 const GROQ_KEYS_URL: &str = "https://console.groq.com/keys";
 const GESTURE_CLICK_GAP: Duration = Duration::from_millis(750);
+const ANSWER_OVERLAY_MIN_ANSWER_HEIGHT: i32 = 56;
+const FLOATING_PREVIEW_TITLE: &str = "Hyprly Floating Answer Preview";
 
 #[derive(Clone, Debug)]
 struct PairingInfo {
@@ -213,6 +215,12 @@ pub fn run_answer_overlay() {
         .application_id("io.github.patermars.HyprlyScreenTest")
         .build();
     application.connect_activate(|application| {
+        let saved_overlay_size = crate::config::Config::load()
+            .map(|config| config.screen.overlay_window)
+            .unwrap_or_default();
+        let overlay_size = Rc::new(std::cell::RefCell::new(saved_overlay_size));
+        let initially_visible = std::env::var("HYPRLY_OVERLAY_VISIBLE").as_deref() != Ok("0");
+        let overlay_is_visible = Rc::new(std::cell::Cell::new(initially_visible));
         let (event_tx, event_rx) = mpsc::channel::<serde_json::Value>();
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines().map_while(|line| line.ok()) {
@@ -224,14 +232,18 @@ pub fn run_answer_overlay() {
 
         let theme_provider = gtk::CssProvider::new();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        root.set_margin_top(16);
+        root.set_margin_top(0);
         root.set_margin_bottom(0);
-        root.set_margin_start(18);
-        root.set_margin_end(18);
+        root.set_margin_start(0);
+        root.set_margin_end(0);
         root.add_css_class("overlay-root");
 
         let pages = gtk::Stack::new();
         pages.set_hexpand(true);
+        pages.set_vexpand(true);
+        // The Context page contains several multi-line editors. Keep its
+        // natural height from forcing the Session page to that same height.
+        pages.set_vhomogeneous(false);
         let page_switcher = gtk::StackSwitcher::new();
         page_switcher.set_stack(Some(&pages));
         page_switcher.set_halign(gtk::Align::Start);
@@ -272,16 +284,14 @@ pub fn run_answer_overlay() {
         pause.add_css_class("overlay-control");
         let clear = gtk::Button::with_label("Clear");
         clear.add_css_class("overlay-control");
-        let copy = gtk::Button::with_label("Copy");
-        copy.add_css_class("overlay-control");
-        copy.set_tooltip_text(Some("Copy answer"));
-        copy.set_sensitive(false);
+        let copy_code = gtk::Button::with_label("Copy code");
+        copy_code.add_css_class("overlay-control");
+        copy_code.set_visible(false);
         header.append(&logo);
         header.append(&page_switcher);
         header.append(&connection);
         header.append(&pause);
         header.append(&clear);
-        header.append(&copy);
         header.append(&gtk::Label::new(Some("Theme")));
         header.append(&theme);
         root.append(&header);
@@ -289,7 +299,8 @@ pub fn run_answer_overlay() {
         root.append(&pages);
 
         let session = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        session.set_margin_top(12);
+        session.set_vexpand(true);
+        session.set_margin_top(0);
         session.set_margin_bottom(0);
         session.add_css_class("hud-card");
         let context_strip = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -330,8 +341,14 @@ pub fn run_answer_overlay() {
         answer.add_css_class("overlay-answer");
         let streaming_answer = Rc::new(std::cell::RefCell::new(String::new()));
         let answer_text = Rc::new(std::cell::RefCell::new(String::new()));
+        let answer_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        answer_actions.set_halign(gtk::Align::End);
+        answer_actions.append(&copy_code);
+        session.append(&answer_actions);
         let answer_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(190)
+            .min_content_height(ANSWER_OVERLAY_MIN_ANSWER_HEIGHT)
+            .max_content_height(saved_overlay_size.max_height as i32)
+            .vexpand(true)
             .child(&answer)
             .build();
         answer_scroll.add_css_class("hud-answer-flow");
@@ -352,7 +369,13 @@ pub fn run_answer_overlay() {
         transcript_strip.append(&transcript_heading);
         transcript_strip.append(&transcript);
         session.append(&transcript_strip);
-        pages.add_titled(&session, Some("session"), "Session");
+        let session_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(1)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&session)
+            .build();
+        session_scroll.set_propagate_natural_height(false);
+        pages.add_titled(&session_scroll, Some("session"), "Session");
 
         let context_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
         context_page.set_margin_top(12);
@@ -393,7 +416,13 @@ pub fn run_answer_overlay() {
         context_actions.append(&context_saved);
         context_actions.append(&save_context);
         context_page.append(&context_actions);
-        pages.add_titled(&context_page, Some("context"), "Context");
+        let context_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(1)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&context_page)
+            .build();
+        context_scroll.set_propagate_natural_height(false);
+        pages.add_titled(&context_scroll, Some("context"), "Context");
 
         theme.connect_selected_notify({
             let provider = theme_provider.clone();
@@ -439,13 +468,17 @@ pub fn run_answer_overlay() {
                 overlay_send(serde_json::json!({"type":"clear_transcript"}));
             }
         });
-        copy.connect_clicked({
+        copy_code.connect_clicked({
             let answer_text = answer_text.clone();
             let connection = connection.clone();
             move |_| {
-                if let Some(display) = gtk::gdk::Display::default() {
-                    display.clipboard().set_text(&answer_text.borrow());
-                    connection.set_text("Answer copied");
+                let answer = answer_text.borrow();
+                let extracted = extract_answer_code(&answer);
+                if !extracted.is_empty() {
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        display.clipboard().set_text(&extracted);
+                        connection.set_text("Code copied");
+                    }
                 }
             }
         });
@@ -481,20 +514,29 @@ pub fn run_answer_overlay() {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title("Hyprly Floating Assistant")
-            .default_width(900)
-            .default_height(460)
+            .default_width(saved_overlay_size.width as i32)
+            .default_height(saved_overlay_size.height as i32)
             .child(&root)
             .build();
         window.add_css_class("answer-window");
         window.set_decorated(false);
+        window.set_resizable(false);
+        window.set_size_request(
+            saved_overlay_size.min_width as i32,
+            saved_overlay_size.min_height as i32,
+        );
         gtk::glib::timeout_add_local(Duration::from_millis(100), {
+            let window = window.clone();
             let connection = connection.clone();
             let transcript = transcript.clone();
             let answer = answer.clone();
+            let answer_scroll = answer_scroll.clone();
             let streaming_answer = streaming_answer.clone();
             let answer_text = answer_text.clone();
-            let copy = copy.clone();
+            let copy_code = copy_code.clone();
             let pairing = pairing.clone();
+            let overlay_size = overlay_size.clone();
+            let overlay_is_visible = overlay_is_visible.clone();
             move || {
                 while let Ok(event) = event_rx.try_recv() {
                     match event.get("event").and_then(|value| value.as_str()) {
@@ -517,6 +559,47 @@ pub fn run_answer_overlay() {
                             });
                         }
                         _ => match event.get("type").and_then(|value| value.as_str()) {
+                            Some("answer_target") => {
+                                let target = event
+                                    .get("target")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("webpage");
+                                let should_be_visible = matches!(target, "floating" | "both");
+                                if should_be_visible {
+                                    let was_visible = overlay_is_visible.replace(true);
+                                    window.set_visible(true);
+                                    if !was_visible {
+                                        let size = *overlay_size.borrow();
+                                        schedule_floating_window_placement(
+                                            size.position_x.zip(size.position_y),
+                                        );
+                                    }
+                                } else {
+                                    overlay_is_visible.set(false);
+                                    window.set_visible(false);
+                                }
+                            }
+                            Some("overlay_window_size") => {
+                                if let Ok(config) = crate::config::Config::load() {
+                                    let updated = config.screen.overlay_window;
+                                    *overlay_size.borrow_mut() = updated;
+                                    answer_scroll.set_max_content_height(updated.max_height as i32);
+                                    window.set_size_request(
+                                        updated.min_width as i32,
+                                        updated.min_height as i32,
+                                    );
+                                    resize_answer_overlay(
+                                        &window,
+                                        &answer_scroll,
+                                        &answer,
+                                        updated,
+                                    );
+                                    let position = updated.position_x.zip(updated.position_y);
+                                    if overlay_is_visible.get() {
+                                        schedule_floating_window_placement(position);
+                                    }
+                                }
+                            }
                             Some("status") => {
                                 if let Some(message) =
                                     event.get("message").and_then(|value| value.as_str())
@@ -536,7 +619,13 @@ pub fn run_answer_overlay() {
                                 streaming_answer.borrow_mut().clear();
                                 answer_text.borrow_mut().clear();
                                 answer.set_text("Thinking…");
-                                copy.set_sensitive(false);
+                                copy_code.set_visible(false);
+                                resize_answer_overlay(
+                                    &window,
+                                    &answer_scroll,
+                                    &answer,
+                                    *overlay_size.borrow(),
+                                );
                             }
                             Some("answer") => {
                                 streaming_answer.borrow_mut().clear();
@@ -546,7 +635,13 @@ pub fn run_answer_overlay() {
                                     .unwrap_or("");
                                 *answer_text.borrow_mut() = text.to_string();
                                 answer.set_markup(&answer_to_pango_markup(text));
-                                copy.set_sensitive(!text.is_empty());
+                                copy_code.set_visible(!extract_answer_code(text).is_empty());
+                                resize_answer_overlay(
+                                    &window,
+                                    &answer_scroll,
+                                    &answer,
+                                    *overlay_size.borrow(),
+                                );
                             }
                             Some("answer_token") => {
                                 if let Some(token) =
@@ -557,7 +652,14 @@ pub fn run_answer_overlay() {
                                     if let Some(partial) = partial_answer_text(&accumulated) {
                                         *answer_text.borrow_mut() = partial.clone();
                                         answer.set_markup(&answer_to_pango_markup(&partial));
-                                        copy.set_sensitive(!partial.is_empty());
+                                        copy_code
+                                            .set_visible(!extract_answer_code(&partial).is_empty());
+                                        resize_answer_overlay(
+                                            &window,
+                                            &answer_scroll,
+                                            &answer,
+                                            *overlay_size.borrow(),
+                                        );
                                     } else if accumulated.is_empty() {
                                         answer.set_text("Writing answer…");
                                     }
@@ -567,7 +669,13 @@ pub fn run_answer_overlay() {
                                 streaming_answer.borrow_mut().clear();
                                 answer_text.borrow_mut().clear();
                                 answer.set_text("Waiting for context…");
-                                copy.set_sensitive(false);
+                                copy_code.set_visible(false);
+                                resize_answer_overlay(
+                                    &window,
+                                    &answer_scroll,
+                                    &answer,
+                                    *overlay_size.borrow(),
+                                );
                             }
                             _ => {}
                         },
@@ -576,7 +684,25 @@ pub fn run_answer_overlay() {
                 gtk::glib::ControlFlow::Continue
             }
         });
-        window.present();
+        if initially_visible {
+            window.present();
+        }
+        if initially_visible {
+            gtk::glib::timeout_add_local_once(Duration::from_millis(300), {
+                let window = window.clone();
+                move || {
+                    window.set_default_size(
+                        saved_overlay_size.width as i32,
+                        saved_overlay_size.height as i32,
+                    );
+                    schedule_floating_window_placement(
+                        saved_overlay_size
+                            .position_x
+                            .zip(saved_overlay_size.position_y),
+                    );
+                }
+            });
+        }
     });
     application.run_with_args(&["hyprly-answer-overlay"]);
 }
@@ -829,12 +955,12 @@ fn overlay_apply_theme(provider: &gtk::CssProvider, selected: u32) {
         _ => ".overlay-root { background: rgba(11, 14, 20, 0.94); color: #f1f5f9; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #7dd3fc; } .overlay-status { color: #a1a1aa; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #f1f5f9; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }",
     };
     let translucent_surface = if selected == 1 {
-        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(255,255,255,0.58), rgba(255,253,248,0.42)); }"
+        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(202,205,210,0.48), rgba(176,180,186,0.40)); }"
     } else {
-        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.20), rgba(13,16,23,0.42)); }"
+        ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(82,86,94,0.30), rgba(48,51,57,0.50)); }"
     };
     let css = format!(
-        "{base_css} {translucent_surface} window.answer-window {{ background: transparent; }} .overlay-root {{ background: transparent; border: 1px solid rgba(255,255,255,0.16); border-radius: 26px; padding-bottom: 0; }} .hud-card {{ padding-bottom: 0; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 2px; }} .overlay-answer {{ background: transparent; padding: 6px 2px; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
+        "{base_css} {translucent_surface} window.answer-window {{ background: transparent; }} .overlay-root {{ background: transparent; border: none; border-radius: 0; padding: 0; }} .hud-card {{ padding: 2px; border: none; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 0; }} .overlay-answer {{ background: transparent; padding: 2px 0; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
     );
     provider.load_from_data(&css);
 }
@@ -874,6 +1000,71 @@ fn answer_to_pango_markup(text: &str) -> String {
     }
     output.push_str(&inline_code_markup(remaining));
     output
+}
+
+fn extract_answer_code(text: &str) -> String {
+    let mut snippets = Vec::new();
+    let mut remaining = text;
+    while let Some(fence_start) = remaining.find("```") {
+        let after_fence = &remaining[fence_start + 3..];
+        let (fenced, tail) = if let Some(fence_end) = after_fence.find("```") {
+            (&after_fence[..fence_end], &after_fence[fence_end + 3..])
+        } else {
+            (after_fence, "")
+        };
+        let code = fenced
+            .find('\n')
+            .map(|newline| &fenced[newline + 1..])
+            .unwrap_or(fenced)
+            .trim_matches('\n');
+        if !code.trim().is_empty() {
+            snippets.push(code.to_string());
+        }
+        remaining = tail;
+    }
+
+    if snippets.is_empty() {
+        let mut remaining = text;
+        while let Some(code_start) = remaining.find('`') {
+            let after_tick = &remaining[code_start + 1..];
+            if after_tick.starts_with("``") {
+                remaining = &after_tick[2..];
+                continue;
+            }
+            let Some(code_end) = after_tick.find('`') else {
+                break;
+            };
+            let code = &after_tick[..code_end];
+            if !code.trim().is_empty() {
+                snippets.push(code.to_string());
+            }
+            remaining = &after_tick[code_end + 1..];
+        }
+    }
+    snippets.join("\n\n")
+}
+
+fn resize_answer_overlay(
+    window: &gtk::ApplicationWindow,
+    answer_scroll: &gtk::ScrolledWindow,
+    answer: &gtk::Label,
+    size: crate::config::OverlayWindowConfig,
+) {
+    let width = size.width.clamp(size.min_width, size.max_width) as i32;
+    let available_width = (answer_scroll.allocated_width() - 16).max(width - 48);
+    let (_, natural_height, _, _) = answer.measure(gtk::Orientation::Vertical, available_width);
+    let answer_ceiling = size
+        .max_height
+        .saturating_sub(size.height)
+        .saturating_add(ANSWER_OVERLAY_MIN_ANSWER_HEIGHT as u32) as i32;
+    let answer_height = natural_height.saturating_add(8).clamp(
+        ANSWER_OVERLAY_MIN_ANSWER_HEIGHT,
+        answer_ceiling.max(ANSWER_OVERLAY_MIN_ANSWER_HEIGHT),
+    );
+    answer_scroll.set_min_content_height(answer_height);
+    let window_height = (size.height as i32 + answer_height - ANSWER_OVERLAY_MIN_ANSWER_HEIGHT)
+        .clamp(size.min_height as i32, size.max_height as i32);
+    window.set_default_size(width, window_height);
 }
 
 fn inline_code_markup(text: &str) -> String {
@@ -959,21 +1150,23 @@ fn build_window(application: &gtk::Application) {
         .visibility(false)
         .hexpand(true)
         .build();
-    let status = gtk::Label::new(Some("Add your Groq API key to get started."));
+    let status = gtk::Label::new(Some(
+        "Hyprly is disconnected. Add an API key if needed, then press Connect to start.",
+    ));
     status.set_xalign(0.0);
     status.set_wrap(true);
 
     install_theme(application);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 18);
     root.add_css_class("app-root");
-    root.set_margin_top(22);
-    root.set_margin_bottom(22);
-    root.set_margin_start(26);
-    root.set_margin_end(26);
+    root.set_margin_top(18);
+    root.set_margin_bottom(18);
+    root.set_margin_start(24);
+    root.set_margin_end(24);
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     header.add_css_class("app-header");
-    let brand_text = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let brand_text = gtk::Box::new(gtk::Orientation::Horizontal, 18);
     brand_text.set_hexpand(true);
     let wordmark = gtk::DrawingArea::builder()
         .content_width(112)
@@ -1003,11 +1196,16 @@ fn build_window(application: &gtk::Application) {
     subtitle.add_css_class("dim-label");
     subtitle.set_xalign(0.0);
     brand_text.append(&wordmark);
+    let divider = gtk::Separator::new(gtk::Orientation::Vertical);
+    divider.set_margin_top(4);
+    divider.set_margin_bottom(4);
+    brand_text.append(&divider);
     brand_text.append(&subtitle);
     header.append(&brand_text);
     let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     header_actions.set_halign(gtk::Align::End);
-    let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
+    let settings_button = gtk::Button::new();
+    settings_button.set_child(Some(&asset_icon("settings", 20)));
     settings_button.set_tooltip_text(Some("Edit config.toml settings"));
     settings_button.add_css_class("flat");
     header_actions.append(&settings_button);
@@ -1049,10 +1247,12 @@ fn build_window(application: &gtk::Application) {
     columns.set_column_spacing(18);
     columns.set_row_spacing(18);
     columns.set_column_homogeneous(false);
+    columns.set_hexpand(true);
 
     let setup_card = gtk::Box::new(gtk::Orientation::Vertical, 12);
     setup_card.add_css_class("card");
-    setup_card.append(&section_heading("Groq API key"));
+    setup_card.set_size_request(320, -1);
+    setup_card.append(&section_heading_icon("Groq API key", "key-round"));
     let key_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     key_row.append(&api_key);
     let help = gtk::LinkButton::with_label(GROQ_KEYS_URL, "?");
@@ -1095,7 +1295,9 @@ fn build_window(application: &gtk::Application) {
 
     let key_actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let save_key = gtk::Button::with_label("Save key");
+    set_button_icon(&save_key, "save");
     let test_key = gtk::Button::with_label("Test Groq API");
+    set_button_icon(&test_key, "play");
     key_actions.append(&save_key);
     key_actions.append(&test_key);
     setup_card.append(&key_actions);
@@ -1104,22 +1306,28 @@ fn build_window(application: &gtk::Application) {
     key_note.set_xalign(0.0);
     setup_card.append(&key_note);
 
-    setup_card.append(&section_heading("System checks"));
-    let checks = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    setup_card.append(&section_heading_icon("System checks", "activity"));
+    let checks = gtk::Box::new(gtk::Orientation::Vertical, 8);
     checks.set_homogeneous(true);
     let test_audio = gtk::Button::with_label("Test PipeWire audio");
+    set_button_icon(&test_audio, "mic");
     let test_uploads = gtk::Button::with_label("Check PDF / DOCX tools");
+    set_button_icon(&test_uploads, "file-text");
     checks.append(&test_audio);
     checks.append(&test_uploads);
     setup_card.append(&checks);
-    columns.attach(&setup_card, 0, 0, 5, 1);
+    columns.attach(&setup_card, 0, 0, 2, 1);
 
     let pairing_card = gtk::Box::new(gtk::Orientation::Vertical, 12);
     pairing_card.add_css_class("card");
-    pairing_card.append(&section_heading("Phone pairing"));
+    pairing_card.set_hexpand(true);
+    pairing_card.append(&section_heading_icon("Phone pairing", "smartphone"));
     let pairing = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     pairing.add_css_class("pairing-layout");
     let pairing_text = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let code_caption = gtk::Label::new(Some("Pairing code"));
+    code_caption.add_css_class("field-heading");
+    code_caption.set_xalign(0.0);
     let code = gtk::Label::new(Some("Not connected"));
     code.add_css_class("title-2");
     code.add_css_class("pairing-code");
@@ -1127,24 +1335,57 @@ fn build_window(application: &gtk::Application) {
     code.set_selectable(true);
     let code_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let copy_code = gtk::Button::with_label("Copy code");
+    set_button_icon(&copy_code, "copy");
     copy_code.set_tooltip_text(Some("Copy pairing code to clipboard"));
     code_row.append(&code);
     code_row.append(&copy_code);
-    let setup_url = gtk::LinkButton::with_label("https://example.com", "Setup URL");
+    let setup_url = gtk::LinkButton::with_label("https://example.com", "Waiting for Hyprly…");
     setup_url.set_halign(gtk::Align::Start);
     setup_url.set_hexpand(true);
     setup_url.set_sensitive(false);
-    let secure_url = gtk::LinkButton::with_label("https://example.com", "Secure URL");
+    setup_url.add_css_class("pairing-link");
+    let setup_caption = gtk::Label::new(Some("Setup URL (for mobile browser)"));
+    setup_caption.add_css_class("field-heading");
+    setup_caption.set_xalign(0.0);
+    let setup_copy = gtk::Button::with_label("Copy");
+    set_button_icon(&setup_copy, "copy");
+    let setup_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    setup_row.add_css_class("url-row");
+    let setup_link_icon = asset_icon("link", 17);
+    setup_row.append(&setup_link_icon);
+    setup_row.append(&setup_url);
+    setup_row.append(&setup_copy);
+    let secure_url = gtk::LinkButton::with_label("https://example.com", "Waiting for Hyprly…");
     secure_url.set_halign(gtk::Align::Start);
     secure_url.set_hexpand(true);
     secure_url.set_sensitive(false);
+    secure_url.add_css_class("pairing-link");
+    let secure_caption = gtk::Label::new(Some("Secure URL (for mobile browser)"));
+    secure_caption.add_css_class("field-heading");
+    secure_caption.set_xalign(0.0);
+    let secure_copy = gtk::Button::with_label("Copy");
+    set_button_icon(&secure_copy, "copy");
+    let secure_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    secure_row.add_css_class("url-row");
+    let secure_link_icon = asset_icon("link", 17);
+    secure_row.append(&secure_link_icon);
+    secure_row.append(&secure_url);
+    secure_row.append(&secure_copy);
     let fingerprint = gtk::Label::new(Some(""));
     fingerprint.set_xalign(0.0);
     fingerprint.set_wrap(true);
     fingerprint.set_selectable(true);
+    fingerprint.add_css_class("fingerprint");
+    let fingerprint_caption = gtk::Label::new(Some("Certificate fingerprint"));
+    fingerprint_caption.add_css_class("field-heading");
+    fingerprint_caption.set_xalign(0.0);
+    pairing_text.append(&code_caption);
     pairing_text.append(&code_row);
-    pairing_text.append(&setup_url);
-    pairing_text.append(&secure_url);
+    pairing_text.append(&setup_caption);
+    pairing_text.append(&setup_row);
+    pairing_text.append(&secure_caption);
+    pairing_text.append(&secure_row);
+    pairing_text.append(&fingerprint_caption);
     pairing_text.append(&fingerprint);
     pairing.append(&pairing_text);
 
@@ -1154,6 +1395,7 @@ fn build_window(application: &gtk::Application) {
         .content_width(190)
         .content_height(190)
         .build();
+    qr_area.add_css_class("qr-preview");
     qr_area.set_draw_func(move |_, context, width, height| {
         context.set_source_rgb(1.0, 1.0, 1.0);
         let _ = context.paint();
@@ -1181,47 +1423,56 @@ fn build_window(application: &gtk::Application) {
     });
     pairing.append(&qr_area);
     pairing_card.append(&pairing);
-    columns.attach(&pairing_card, 5, 0, 7, 1);
+    columns.attach(&pairing_card, 2, 0, 10, 1);
     root.append(&columns);
 
-    let connection_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let connect = gtk::Button::with_label("Connect");
     connect.add_css_class("suggested-action");
     let disconnect = gtk::Button::with_label("Disconnect");
     disconnect.set_sensitive(false);
-    let answer_target = gtk::DropDown::from_strings(&[
-        "Paired webpage",
-        "Floating window",
-        "Webpage + floating window",
-    ]);
+    let answer_target = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    answer_target.add_css_class("answer-target-selector");
+    let webpage_target = gtk::ToggleButton::with_label("Webpage");
+    webpage_target.add_css_class("target-first");
+    let floating_target = gtk::ToggleButton::with_label("Floating window");
+    floating_target.add_css_class("target-middle");
+    floating_target.set_group(Some(&webpage_target));
+    let both_target = gtk::ToggleButton::with_label("Both");
+    both_target.add_css_class("target-last");
+    both_target.set_group(Some(&webpage_target));
     let saved_answer_target = crate::config::Config::load()
         .map(|config| config.screen.answer_target)
         .unwrap_or_else(|_| "webpage".to_string());
-    answer_target.set_selected(match saved_answer_target.as_str() {
-        "floating" => 1,
-        "both" => 2,
-        _ => 0,
-    });
-    answer_target.set_tooltip_text(Some(
-        "Choose whether Hyprly sends transcription and answers to the webpage, floating window, or both.",
-    ));
-    let output_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    output_row.set_halign(gtk::Align::Start);
-    output_row.append(&gtk::Label::new(Some("Answer window")));
+    match saved_answer_target.as_str() {
+        "floating" => floating_target.set_active(true),
+        "both" => both_target.set_active(true),
+        _ => webpage_target.set_active(true),
+    }
+    answer_target.set_tooltip_text(Some("Choose where Hyprly displays answers."));
+    answer_target.append(&webpage_target);
+    answer_target.append(&floating_target);
+    answer_target.append(&both_target);
+    let output_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    output_row.add_css_class("connection-toolbar");
+    output_row.set_hexpand(true);
+    let answer_target_label = gtk::Label::new(Some("Answer window"));
+    answer_target_label.add_css_class("answer-target-label");
+    output_row.append(&answer_target_label);
     output_row.append(&answer_target);
-    connection_actions.append(&connect);
-    connection_actions.append(&disconnect);
-    connection_actions.add_css_class("connection-actions");
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    output_row.append(&spacer);
+    output_row.append(&connect);
+    output_row.append(&disconnect);
     root.append(&output_row);
-    root.append(&connection_actions);
     status.add_css_class("status-line");
     root.append(&status);
 
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .title("Hyprly")
-        .default_width(1050)
-        .default_height(700)
+        .default_width(1180)
+        .default_height(760)
         .child(&root)
         .build();
     window.set_icon_name(Some("logo"));
@@ -1281,6 +1532,20 @@ fn build_window(application: &gtk::Application) {
             }
         }
     });
+    for (button, link, label) in [
+        (setup_copy, setup_url, "Setup URL"),
+        (secure_copy, secure_url, "Secure URL"),
+    ] {
+        button.connect_clicked({
+            let status = status.clone();
+            move |_| {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    display.clipboard().set_text(&link.uri());
+                    status.set_text(&format!("{label} copied to clipboard."));
+                }
+            }
+        });
+    }
 
     let theme_provider = theme_provider();
     let theme_names = ["midnight", "paper", "aurora"];
@@ -1347,25 +1612,9 @@ fn build_window(application: &gtk::Application) {
         let state = state.clone();
         move |_| stop_backend(&state)
     });
-    answer_target.connect_selected_notify({
-        let state = state.clone();
-        move |target| {
-            let value = match target.selected() {
-                1 => "floating",
-                2 => "both",
-                _ => "webpage",
-            };
-            let status = state.borrow().status.clone();
-            match crate::config::Config::save_answer_target(value) {
-                Ok(()) if state.borrow().child.is_some() => status
-                    .set_text("Answer destination saved. Disconnect and reconnect to apply it."),
-                Ok(()) => status.set_text("Answer destination saved."),
-                Err(error) => {
-                    status.set_text(&format!("Could not save answer destination: {error}"))
-                }
-            }
-        }
-    });
+    connect_answer_target(&webpage_target, "webpage", &state);
+    connect_answer_target(&floating_target, "floating", &state);
+    connect_answer_target(&both_target, "both", &state);
     window.connect_close_request({
         let window = window.clone();
         move |_| {
@@ -1393,8 +1642,211 @@ fn build_window(application: &gtk::Application) {
         for (entry, key) in backup_keys.iter().zip(configured_keys.iter().skip(1)) {
             entry.set_text(key);
         }
-        start_backend(&state);
     }
+}
+
+fn hyprland_clients() -> Result<Vec<serde_json::Value>> {
+    let output = Command::new("hyprctl")
+        .args(["-j", "clients"])
+        .output()
+        .context("could not run `hyprctl -j clients`")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`hyprctl -j clients` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout)
+        .context("could not parse the Hyprland client list")
+}
+
+fn hyprland_window_info(title: &str) -> Result<serde_json::Value> {
+    let clients = hyprland_clients()?;
+    clients
+        .iter()
+        .find(|window| window.get("title").and_then(|value| value.as_str()) == Some(title))
+        .or_else(|| {
+            clients.iter().find(|window| {
+                window.get("initialTitle").and_then(|value| value.as_str()) == Some(title)
+            })
+        })
+        .or_else(|| {
+            clients.iter().find(|window| {
+                ["title", "initialTitle"].iter().any(|field| {
+                    window
+                        .get(*field)
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|window_title| window_title.contains(title))
+                })
+            })
+        })
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Hyprland has no window matching `{title}`"))
+}
+
+fn hyprland_window_position(title: &str) -> Result<(i32, i32)> {
+    let window = hyprland_window_info(title)?;
+    hyprland_position_from_info(&window, title)
+}
+
+fn hyprland_position_from_info(
+    window: &serde_json::Value,
+    description: &str,
+) -> Result<(i32, i32)> {
+    let at = window
+        .get("at")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Hyprland did not report a position for `{description}`")
+        })?;
+    let coordinate = |value: &serde_json::Value| {
+        value
+            .as_i64()
+            .map(|value| value as i32)
+            .or_else(|| value.as_f64().map(|value| value.round() as i32))
+    };
+    let x = at
+        .first()
+        .and_then(coordinate)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Hyprland returned an invalid x position for `{description}`")
+        })?;
+    let y = at
+        .get(1)
+        .and_then(coordinate)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Hyprland returned an invalid y position for `{description}`")
+        })?;
+    Ok((x, y))
+}
+
+fn schedule_floating_window_placement(position: Option<(i32, i32)>) {
+    gtk::glib::timeout_add_local_once(Duration::from_millis(300), move || {
+        if let Err(error) = place_floating_window(position) {
+            eprintln!("Hyprly: could not apply floating answer window position: {error}");
+        }
+    });
+}
+
+fn place_floating_window(position: Option<(i32, i32)>) -> Result<()> {
+    let title = "Hyprly Floating Assistant";
+    let window = hyprland_window_info(title)?;
+    let address = window
+        .get("address")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Hyprland did not report the answer window address"))?;
+    let selector = format!("address:{address}");
+    let uses_lua_dispatch = hyprland_uses_lua_dispatch()?;
+
+    // Pixel movement and centering only work for floating windows. Set this
+    // explicitly so positioning does not depend on a user window rule.
+    if uses_lua_dispatch {
+        hyprland_lua_dispatch(&format!(
+            "hl.dsp.window.float({{ action = \"set\", window = \"{selector}\" }})"
+        ))?;
+    } else {
+        hyprland_dispatch("setfloating", Some(&selector))?;
+    }
+
+    if let Some(expected) = position {
+        if uses_lua_dispatch {
+            hyprland_lua_dispatch(&format!(
+                "hl.dsp.window.move({{ window = \"{selector}\", x = {}, y = {}, relative = false }})",
+                expected.0, expected.1
+            ))?;
+        } else {
+            hyprland_dispatch(
+                "movewindowpixel",
+                Some(&format!("exact {} {},{selector}", expected.0, expected.1)),
+            )?;
+        }
+        let actual = hyprland_window_position(title)?;
+        if actual != expected {
+            anyhow::bail!(
+                "Hyprland reports the answer window at ({}, {}), expected ({}, {})",
+                actual.0,
+                actual.1,
+                expected.0,
+                expected.1
+            );
+        }
+    } else {
+        if uses_lua_dispatch {
+            hyprland_lua_dispatch(&format!(
+                "hl.dsp.window.center({{ window = \"{selector}\" }})"
+            ))?;
+        } else {
+            // The legacy centerwindow dispatcher acts on the active window.
+            // Focus this exact window first to avoid centering another app.
+            hyprland_dispatch("focuswindow", Some(&selector))?;
+            hyprland_dispatch("centerwindow", None)?;
+        }
+    }
+    Ok(())
+}
+
+fn hyprland_uses_lua_dispatch() -> Result<bool> {
+    let output = Command::new("hyprctl")
+        .arg("version")
+        .output()
+        .context("could not read the Hyprland version")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`hyprctl version` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let version_text = String::from_utf8_lossy(&output.stdout);
+    let (major, minor) = version_text
+        .split_whitespace()
+        .find_map(parse_hyprland_major_minor)
+        .ok_or_else(|| anyhow::anyhow!("could not parse the Hyprland version: {version_text}"))?;
+    Ok(major > 0 || minor >= 55)
+}
+
+fn parse_hyprland_major_minor(token: &str) -> Option<(u64, u64)> {
+    let start = token.find(|character: char| character.is_ascii_digit())?;
+    let version = &token[start..];
+    let mut parts = version.split(|character: char| !character.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+fn hyprland_lua_dispatch(expression: &str) -> Result<()> {
+    let output = Command::new("hyprctl")
+        // `hyprctl dispatch` wraps this expression in `hl.dispatch(...)`.
+        .args(["dispatch", expression])
+        .output()
+        .context("could not run a Lua dispatcher through `hyprctl`")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Hyprland rejected Lua dispatcher `{expression}`: {}{}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    Ok(())
+}
+
+fn hyprland_dispatch(dispatcher: &str, argument: Option<&str>) -> Result<()> {
+    let mut command = Command::new("hyprctl");
+    command.args(["dispatch", dispatcher]);
+    if let Some(argument) = argument {
+        command.arg(argument);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("could not run `hyprctl dispatch {dispatcher}`"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Hyprland rejected `{dispatcher}`: {}{}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    Ok(())
 }
 
 fn create_wordmark_surface(theme: &str) -> gtk::cairo::ImageSurface {
@@ -1731,6 +2183,160 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     screen_privacy_note.set_wrap(true);
     screen_privacy_note.set_xalign(0.0);
     screen_page.append(&screen_privacy_note);
+
+    let floating_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    floating_page.set_hexpand(true);
+    floating_page.set_margin_top(20);
+    floating_page.set_margin_bottom(20);
+    floating_page.set_margin_start(20);
+    floating_page.set_margin_end(20);
+    floating_page.append(&section_heading("Floating answer window"));
+    let floating_intro = gtk::Label::new(Some(
+        "Open the sample, move it and drag its edges with the mouse, then click Save settings. The real answer window uses the saved size and position. You can also choose to center it when it opens. The answer window can grow up to twice the saved height.",
+    ));
+    floating_intro.set_wrap(true);
+    floating_intro.set_xalign(0.0);
+    floating_page.append(&floating_intro);
+
+    let saved_size = config.screen.overlay_window;
+    let preview_window = Rc::new(std::cell::RefCell::new(None::<gtk::Window>));
+    let center_on_launch = gtk::CheckButton::with_label("Center answer window when it opens");
+    // Reload config to ensure we have the latest position values
+    let current_position = crate::config::Config::load()
+        .ok()
+        .and_then(|c| c.screen.overlay_window.position_x.zip(c.screen.overlay_window.position_y))
+        .or_else(|| saved_size.position_x.zip(saved_size.position_y));
+    center_on_launch.set_active(current_position.is_none());
+    center_on_launch.set_tooltip_text(Some(
+        "Turn this off to use the position saved from the draggable sample window.",
+    ));
+    floating_page.append(&center_on_launch);
+    let preview_button = gtk::Button::with_label("Open draggable sample window");
+    preview_button.set_halign(gtk::Align::Start);
+    floating_page.append(&preview_button);
+    tabs.append_page(&floating_page, Some(&gtk::Label::new(Some("Floating"))));
+
+    preview_button.connect_clicked({
+        let dialog = dialog.clone();
+        let preview_window = preview_window.clone();
+        let center_on_launch = center_on_launch.clone();
+        move |_| {
+            center_on_launch.set_active(false);
+            if let Some(preview) = preview_window.borrow().as_ref() {
+                preview.present();
+                return;
+            }
+            let preview = gtk::Window::builder()
+                .title(FLOATING_PREVIEW_TITLE)
+                .transient_for(&dialog)
+                .default_width(saved_size.width as i32)
+                .default_height(saved_size.height as i32)
+                .build();
+            preview.add_css_class("answer-window");
+            preview.set_decorated(true);
+            preview.set_resizable(true);
+            let preview_theme = gtk::CssProvider::new();
+            let theme = crate::config::Config::load()
+                .map(|config| config.screen.overlay_theme)
+                .unwrap_or_else(|_| "midnight".to_string());
+            let theme_index = match theme.as_str() {
+                "paper" => 1,
+                "aurora" => 2,
+                _ => 0,
+            };
+            overlay_apply_theme(&preview_theme, theme_index);
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &preview_theme,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+
+            let preview_root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+            preview_root.set_margin_top(16);
+            preview_root.set_margin_start(18);
+            preview_root.set_margin_end(18);
+            preview_root.add_css_class("overlay-root");
+
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            header.add_css_class("overlay-island");
+            let header_title = gtk::Label::new(Some("HYPRLY · SESSION PREVIEW"));
+            header_title.set_hexpand(true);
+            header_title.set_xalign(0.0);
+            header_title.add_css_class("overlay-heading");
+            let header_status = gtk::Label::new(Some("Floating answer sample"));
+            header_status.add_css_class("overlay-status");
+            header.append(&header_title);
+            header.append(&header_status);
+            preview_root.append(&header);
+
+            let sample = gtk::Box::new(gtk::Orientation::Vertical, 10);
+            sample.set_vexpand(true);
+            sample.set_margin_top(12);
+            sample.add_css_class("hud-card");
+            let context_strip = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            context_strip.add_css_class("hud-context-strip");
+            let context_title = gtk::Label::new(Some("SAMPLE ANSWER"));
+            context_title.add_css_class("overlay-heading");
+            let context_status = gtk::Label::new(Some("Preview content"));
+            context_status.set_hexpand(true);
+            context_status.set_halign(gtk::Align::End);
+            context_status.add_css_class("overlay-status");
+            context_strip.append(&context_title);
+            context_strip.append(&context_status);
+            sample.append(&context_strip);
+
+            let sample_answer = gtk::Label::new(None);
+            sample_answer.set_xalign(0.0);
+            sample_answer.set_yalign(0.0);
+            sample_answer.set_wrap(true);
+            sample_answer.set_selectable(true);
+            sample_answer.add_css_class("overlay-answer");
+            sample_answer.set_markup(&answer_to_pango_markup(
+                "A concise explanation can stay compact. Longer answers use more vertical space.\n\n```rust\nfn greet(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n\nfn main() {\n    println!(\"{}\", greet(\"Hyprly\"));\n}\n```",
+            ));
+            let answer_scroll = gtk::ScrolledWindow::builder()
+                .min_content_height(ANSWER_OVERLAY_MIN_ANSWER_HEIGHT)
+                .max_content_height(saved_size.max_height as i32)
+                .vexpand(true)
+                .child(&sample_answer)
+                .build();
+            answer_scroll.add_css_class("hud-answer-flow");
+            sample.append(&answer_scroll);
+
+            let transcript = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            transcript.add_css_class("hud-inner-panel");
+            let transcript_title = gtk::Label::new(Some("LIVE TRANSCRIPT"));
+            transcript_title.add_css_class("overlay-heading");
+            let transcript_text = gtk::Label::new(Some("Resize this sample with the mouse."));
+            transcript_text.set_hexpand(true);
+            transcript_text.set_xalign(0.0);
+            transcript_text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            transcript.append(&transcript_title);
+            transcript.append(&transcript_text);
+            sample.append(&transcript);
+
+            let sample_scroll = gtk::ScrolledWindow::builder()
+                .min_content_height(1)
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .child(&sample)
+                .build();
+            sample_scroll.set_propagate_natural_height(false);
+            preview_root.append(&sample_scroll);
+            preview.set_child(Some(&preview_root));
+            preview.connect_close_request({
+                let preview_window = preview_window.clone();
+                move |window| {
+                    preview_window.borrow_mut().take();
+                    let _ = window;
+                    gtk::glib::Propagation::Proceed
+                }
+            });
+            *preview_window.borrow_mut() = Some(preview.clone());
+            preview.present();
+        }
+    });
     record_gesture.connect_clicked({
         let state = state.clone();
         let trigger_label = trigger_label.clone();
@@ -1804,6 +2410,8 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
         let dialog = dialog.clone();
         let status = status.clone();
         let state = state.clone();
+        let preview_window = preview_window.clone();
+        let center_on_launch = center_on_launch.clone();
         move |_, response| {
             if response == gtk::ResponseType::Accept {
                 let mut updated = config.clone();
@@ -1811,6 +2419,61 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
                 updated.screen.answer_target = crate::config::Config::load()
                     .map(|current| current.screen.answer_target)
                     .unwrap_or_else(|_| updated.screen.answer_target.clone());
+                let measured = preview_window
+                    .borrow()
+                    .as_ref()
+                    .map(|preview| (preview.width(), preview.height()))
+                    .filter(|(width, height)| *width > 0 && *height > 0)
+                    .unwrap_or((
+                        config.screen.overlay_window.width as i32,
+                        config.screen.overlay_window.height as i32,
+                    ));
+                let saved_width = measured.0.clamp(120, 3000) as u32;
+                let saved_height = measured.1.clamp(100, 3000) as u32;
+                let preview_is_open = preview_window.borrow().is_some();
+                let saved_position = if center_on_launch.is_active() {
+                    None
+                } else if preview_is_open {
+                    match hyprland_window_position(FLOATING_PREVIEW_TITLE) {
+                        Ok(position) => Some(position),
+                        Err(error) => {
+                            status.set_text(&format!(
+                                "Could not save the preview position: {error}"
+                            ));
+                            return;
+                        }
+                    }
+                } else {
+                    // Reload config to get the current position values rather than
+                    // using the snapshot from when the dialog opened
+                    crate::config::Config::load()
+                        .ok()
+                        .and_then(|current| {
+                            current
+                                .screen
+                                .overlay_window
+                                .position_x
+                                .zip(current.screen.overlay_window.position_y)
+                        })
+                        .or_else(|| {
+                            config
+                                .screen
+                                .overlay_window
+                                .position_x
+                                .zip(config.screen.overlay_window.position_y)
+                        })
+                };
+                let overlay_window = crate::config::OverlayWindowConfig {
+                    min_width: saved_width,
+                    width: saved_width,
+                    max_width: saved_width,
+                    min_height: config.screen.overlay_window.min_height.min(saved_height),
+                    height: saved_height,
+                    max_height: saved_height.saturating_mul(2).max(saved_height),
+                    position_x: saved_position.map(|(x, _)| x),
+                    position_y: saved_position.map(|(_, y)| y),
+                };
+                updated.screen.overlay_window = overlay_window;
                 let configured_vision_model = vision_model.text().trim().to_string();
                 if !configured_vision_model.is_empty() {
                     updated.screen.vision_model = configured_vision_model;
@@ -1845,18 +2508,38 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
                     .map(str::to_owned)
                     .collect();
                 updated.context.max_chars = max_context.value_as_int().max(1000) as usize;
+                let position_message = saved_position
+                    .map(|(x, y)| format!(" Position saved at ({x}, {y})."))
+                    .unwrap_or_else(|| " The window will be centered when it opens.".to_string());
                 let result = toml::to_string_pretty(&updated)
                     .map_err(anyhow::Error::from)
                     .and_then(|serialized| crate::config::Config::save_config_text(&serialized));
                 match result {
-                    Ok(()) => status.set_text(
-                        "Settings saved. Restart the connection to apply backend changes.",
-                    ),
+                    Ok(()) => {
+                        let overlay_stdin = state.borrow().overlay_stdin.clone();
+                        if let Some(overlay_stdin) = overlay_stdin {
+                            let _ = send_backend_event(
+                                &overlay_stdin,
+                                serde_json::json!({"type":"overlay_window_size"}),
+                            );
+                            status.set_text(&format!(
+                                "Saved floating window size: {saved_width} × {saved_height} logical px.{position_message} Applied immediately."
+                            ));
+                        } else {
+                            status.set_text(&format!(
+                                "Saved floating window size: {saved_width} × {saved_height} logical px.{position_message} It applies when the window next opens."
+                            ));
+                        }
+                    }
                     Err(error) => {
                         status.set_text(&format!("Could not save settings: {error}"));
                         return;
                     }
                 }
+            }
+            let preview_to_close = { preview_window.borrow_mut().take() };
+            if let Some(preview) = preview_to_close {
+                preview.close();
             }
             dialog.close();
         }
@@ -1963,6 +2646,40 @@ fn section_heading(text: &str) -> gtk::Label {
     label
 }
 
+fn section_heading_icon(text: &str, icon_name: &str) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    row.add_css_class("icon-heading");
+    let icon = asset_icon(icon_name, 20);
+    row.append(&icon);
+    let label = section_heading(text);
+    row.append(&label);
+    row
+}
+
+fn set_button_icon(button: &gtk::Button, icon_name: &str) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = asset_icon(icon_name, 17);
+    row.append(&icon);
+    row.append(&gtk::Label::new(Some(&button.label().unwrap_or_default())));
+    button.set_child(Some(&row));
+}
+
+fn asset_icon(name: &str, pixel_size: i32) -> gtk::Image {
+    let filename = format!("hyprly-{name}.svg");
+    let source_tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets/icons")
+        .join(&filename);
+    let installed = std::path::Path::new("/usr/share/hyprly/icons").join(filename);
+    let path = if source_tree.exists() {
+        source_tree
+    } else {
+        installed
+    };
+    let image = gtk::Image::from_file(path);
+    image.set_pixel_size(pixel_size);
+    image
+}
+
 fn theme_provider() -> gtk::CssProvider {
     let provider = gtk::CssProvider::new();
     if let Some(display) = gtk::gdk::Display::default() {
@@ -2024,9 +2741,13 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
     let css = format!(
         r#"
       window, .app-root {{ background: {bg}; color: {text}; }}
-      .app-header {{ padding: 0 0 16px; border-bottom: 1px solid {border}; }}
+      .app-header {{ min-height: 52px; padding: 0 0 11px; border-bottom: 1px solid {border}; }}
+      .app-header separator {{ background: {border}; min-width: 1px; }}
+      .app-header label.dim-label {{ font-size: 14px; }}
       .wordmark {{ background: transparent; }}
-      .card {{ background: {surface}; border: 1px solid {border}; border-radius: 18px; padding: 20px; }}
+      .card {{ background: {surface}; border: 1px solid {border}; border-radius: 16px; padding: 20px; }}
+      .card .icon-heading {{ padding-bottom: 9px; border-bottom: 1px solid {border}; }}
+      .card .icon-heading label {{ color: {text}; font-size: 15px; font-weight: 700; }}
       .update-notice {{ background: {surface}; border: 1px solid {border}; border-radius: 9px; padding: 3px 8px; }}
       .update-notice label {{ color: {secondary}; font-size: 12px; }}
       .update-notice button {{ min-height: 0; padding: 3px 7px; border: none; background: transparent; }}
@@ -2037,17 +2758,37 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
       spinbutton {{ padding: 8px 12px; }}
       spinbutton button {{ margin: 3px; padding: 5px 8px; }}
       button:hover {{ border-color: {accent}; }}
-      button.suggested-action {{ color: {dark_ink}; background: {accent}; border-color: {accent}; font-weight: 700; }}
+      button.suggested-action {{ color: {connect_ink}; background: {connect_bg}; border-color: {connect_border}; font-weight: 700; }}
       .theme-picker {{ min-width: 125px; }}
       .muted, label.dim-label {{ color: {secondary}; }}
       .muted {{ color: {muted}; }}
       .pairing-code {{ color: {accent}; font-family: monospace; font-size: 30px; font-weight: 800; letter-spacing: 5px; padding: 10px 12px; background: {input}; border: 1px solid {border}; border-radius: 12px; }}
+      .field-heading {{ color: {secondary}; font-size: 12px; font-weight: 700; }}
+      .url-row {{ background: {input}; border: 1px solid {border}; border-radius: 10px; padding: 2px 4px 2px 10px; }}
+      .url-row button {{ min-height: 34px; padding: 7px 10px; }}
+      .pairing-link {{ color: {text}; font-size: 12px; text-decoration: none; }}
+      .fingerprint {{ color: {muted}; background: {input}; border-radius: 9px; padding: 10px 12px; font-family: monospace; font-size: 10px; }}
+      .qr-preview {{ background: #ffffff; border: 1px solid {border}; border-radius: 12px; padding: 10px; }}
+      .connection-toolbar {{ background: {surface}; border: 1px solid {border}; border-radius: 13px; padding: 9px 12px; }}
+      .connection-toolbar > label {{ color: {secondary}; font-weight: 700; }}
+      .answer-target-label {{ color: {secondary}; font-weight: 700; }}
+      .answer-target-selector {{ background: {input}; border: 1px solid {border}; border-radius: 10px; padding: 3px; }}
+      .answer-target-selector button.toggle {{ color: {text}; background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; }}
+      .answer-target-selector button.toggle:hover {{ background: {raised}; }}
+      .answer-target-selector button.toggle:checked {{ color: {dark_ink}; background: {accent}; border: 1px solid {accent}; box-shadow: none; font-weight: 750; }}
       .status-line {{ color: {secondary}; padding: 10px 12px; background: {raised}; border: 1px solid {border}; border-radius: 10px; }}
       .card label {{ color: {text}; }}
       .connection-actions {{ padding-top: 4px; }}
       .card button {{ min-height: 38px; }}
     "#,
-        dark_ink = if dark { "#102016" } else { "#ffffff" }
+        dark_ink = if dark { "#102016" } else { "#ffffff" },
+        connect_bg = if theme == "paper" { accent } else { raised },
+        connect_ink = if theme == "paper" {
+            if dark { "#102016" } else { "#ffffff" }
+        } else {
+            text
+        },
+        connect_border = if theme == "paper" { accent } else { border }
     );
     provider.load_from_data(&css);
 }
@@ -2097,6 +2838,55 @@ fn save_current_key(state: &Rc<std::cell::RefCell<AppState>>) {
             .status
             .set_text(&format!("Could not save API key: {error}")),
     }
+}
+
+fn connect_answer_target(
+    button: &gtk::ToggleButton,
+    target: &'static str,
+    state: &Rc<std::cell::RefCell<AppState>>,
+) {
+    button.connect_toggled({
+        let state = state.clone();
+        move |button| {
+            if !button.is_active() {
+                return;
+            }
+            let (status, backend_stdin, overlay_stdin, running) = {
+                let state = state.borrow();
+                (
+                    state.status.clone(),
+                    state.backend_stdin.clone(),
+                    state.overlay_stdin.clone(),
+                    state.child.is_some(),
+                )
+            };
+            match crate::config::Config::save_answer_target(target) {
+                Ok(()) if running => {
+                    let backend_updated = backend_stdin.is_some_and(|stdin| {
+                        send_backend_event(
+                            &stdin,
+                            serde_json::json!({"type":"answer_target","target":target}),
+                        )
+                    });
+                    let overlay_updated = overlay_stdin.is_some_and(|stdin| {
+                        send_backend_event(
+                            &stdin,
+                            serde_json::json!({"type":"answer_target","target":target}),
+                        )
+                    });
+                    status.set_text(if backend_updated && overlay_updated {
+                        "Answer destination saved and applied."
+                    } else {
+                        "Answer destination saved. Reconnect Hyprly if the window does not switch."
+                    });
+                }
+                Ok(()) => status.set_text("Answer destination saved."),
+                Err(error) => {
+                    status.set_text(&format!("Could not save answer destination: {error}"))
+                }
+            }
+        }
+    });
 }
 
 #[derive(serde::Deserialize)]
@@ -2224,19 +3014,18 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
         .stdin
         .take()
         .map(|stdin| std::sync::Arc::new(std::sync::Mutex::new(stdin)));
-    let (overlay_child, overlay_stdin) = if use_overlay {
-        match spawn_answer_overlay(backend_stdin.clone()) {
-            Ok(overlay) => (Some(overlay.0), overlay.1),
-            Err(error) => {
-                let _ = child.kill();
-                state.borrow().status.set_text(&format!(
-                    "Could not start the private answer window: {error}"
-                ));
-                return;
-            }
+    let (overlay_child, overlay_stdin) = match spawn_answer_overlay(
+        backend_stdin.clone(),
+        use_overlay,
+    ) {
+        Ok(overlay) => (Some(overlay.0), overlay.1),
+        Err(error) => {
+            let _ = child.kill();
+            state.borrow().status.set_text(&format!(
+                "Could not start the private answer window: {error}"
+            ));
+            return;
         }
-    } else {
-        (None, None)
     };
 
     let event_tx = state.borrow().event_tx.clone();
@@ -2333,6 +3122,7 @@ fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
 
 fn spawn_answer_overlay(
     backend_stdin: Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
+    visible: bool,
 ) -> Result<(
     Child,
     Option<std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>>,
@@ -2341,9 +3131,10 @@ fn spawn_answer_overlay(
     let executable = std::env::current_exe().context("Could not locate Hyprly")?;
     let mut child = Command::new(executable)
         .arg("answer-overlay")
+        .env("HYPRLY_OVERLAY_VISIBLE", if visible { "1" } else { "0" })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .context("Could not launch the GTK answer overlay")?;
     let Some(stdin) = child.stdin.take() else {
@@ -2455,18 +3246,14 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
             UiEvent::Pairing(info) => {
                 state_ref.code.set_text(&info.code);
                 state_ref.setup_url.set_uri(&info.setup_url);
-                state_ref
-                    .setup_url
-                    .set_label(&format!("Setup: {}", info.setup_url));
+                state_ref.setup_url.set_label(&info.setup_url);
                 state_ref.setup_url.set_sensitive(true);
                 state_ref.secure_url.set_uri(&info.secure_url);
-                state_ref
-                    .secure_url
-                    .set_label(&format!("Secure: {}", info.secure_url));
+                state_ref.secure_url.set_label(&info.secure_url);
                 state_ref.secure_url.set_sensitive(true);
                 state_ref
                     .fingerprint
-                    .set_text(&format!("Certificate fingerprint: {}", info.fingerprint));
+                    .set_text(&info.fingerprint);
                 *state_ref.qr_code.borrow_mut() = QrCode::new(info.secure_url.as_bytes()).ok();
                 state_ref.qr_area.queue_draw();
             }
@@ -2799,13 +3586,39 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                             .await
                         {
                             Ok(response) if response.status().is_success() => {
-                                return Ok(format!("Groq key {} works.", index + 1))
+                                let models: serde_json::Value = response
+                                    .json()
+                                    .await
+                                    .context("Groq returned an invalid models response")?;
+                                let model_count = models
+                                    .get("data")
+                                    .and_then(serde_json::Value::as_array)
+                                    .map_or(0, Vec::len);
+                                return Ok(format!(
+                                    "Groq API key {} works. {model_count} models available.",
+                                    index + 1
+                                ));
                             }
-                            Ok(response) => failures.push(format!(
-                                "Key {}: HTTP {}",
-                                index + 1,
-                                response.status()
-                            )),
+                            Ok(response) => {
+                                let status = response.status();
+                                let body = response.text().await.unwrap_or_default();
+                                let detail = serde_json::from_str::<serde_json::Value>(&body)
+                                    .ok()
+                                    .and_then(|value| {
+                                        value
+                                            .get("error")
+                                            .and_then(|error| error.get("message").or(Some(error)))
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(str::to_owned)
+                                    })
+                                    .filter(|detail| !detail.trim().is_empty())
+                                    .unwrap_or_else(|| body.trim().chars().take(240).collect());
+                                failures.push(if detail.is_empty() {
+                                    format!("Key {}: HTTP {status}", index + 1)
+                                } else {
+                                    format!("Key {}: HTTP {status}: {detail}", index + 1)
+                                });
+                            }
                             Err(error) => failures.push(format!("Key {}: {error}", index + 1)),
                         }
                     }
@@ -2927,7 +3740,15 @@ fn friendly_api_error(message: &str) -> String {
     } else {
         "Groq API error. Check the key, account limits, and network connection."
     };
-    summary.into()
+    let details = message
+        .strip_prefix("All Groq keys failed.")
+        .unwrap_or(message)
+        .trim();
+    if details.is_empty() {
+        summary.into()
+    } else {
+        format!("{summary} {details}")
+    }
 }
 
 fn start_tray(actions: Sender<TrayAction>, events: Sender<UiEvent>) {

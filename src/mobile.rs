@@ -21,7 +21,7 @@ use std::{
     io::Write,
     net::SocketAddr,
     path::Path,
-    sync::atomic::{AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicU64, AtomicU8, AtomicUsize},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -51,6 +51,7 @@ pub struct MobileHub {
     connected_clients: Arc<AtomicUsize>,
     local_connected: Arc<AtomicBool>,
     connected: watch::Sender<bool>,
+    answer_target: Arc<AtomicU8>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +63,7 @@ pub enum MobileCommand {
 }
 
 impl MobileHub {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(answer_target: &str) -> anyhow::Result<Self> {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -92,7 +93,13 @@ impl MobileHub {
             connected_clients: Arc::new(AtomicUsize::new(0)),
             local_connected: Arc::new(AtomicBool::new(false)),
             connected,
+            answer_target: Arc::new(AtomicU8::new(answer_target_code(answer_target))),
         })
+    }
+
+    pub fn set_answer_target(&self, target: &str) {
+        self.answer_target
+            .store(answer_target_code(target), Ordering::Relaxed);
     }
 
     pub fn pairing_info(&self) -> serde_json::Value {
@@ -487,6 +494,14 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
             event = events.recv() => {
                 match event {
                     Ok(event) => {
+                        if hub.answer_target.load(Ordering::Relaxed) == 1
+                            && serde_json::from_str::<serde_json::Value>(&event)
+                                .ok()
+                                .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+                                .is_some_and(|event_type| matches!(event_type.as_str(), "answer_start" | "answer_token" | "answer" | "topic_reset"))
+                        {
+                            continue;
+                        }
                         if socket.send(Message::Text(event.into())).await.is_err() {
                             break;
                         }
@@ -538,6 +553,14 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
     if hub.connected_clients.fetch_sub(1, Ordering::Relaxed) == 1 {
         hub.connected
             .send_replace(hub.local_connected.load(Ordering::Relaxed));
+    }
+}
+
+fn answer_target_code(target: &str) -> u8 {
+    match target {
+        "floating" => 1,
+        "both" => 2,
+        _ => 0,
     }
 }
 
