@@ -4,7 +4,7 @@ if [[ -n ${startdir:-} && -n ${BUILDDIR:-} && "$BUILDDIR" -ef "$startdir" && -f 
 fi
 
 pkgname=hyprly-git
-pkgver=2.0.1.r1.g3b31fcc
+pkgver=2.0.2.r0.ge798b79
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')
@@ -44,5 +44,7 @@ package() {
     install -Dm755 target/release/hyprly "$pkgdir/usr/bin/hyprly"
     install -Dm644 data/hyprly.desktop "$pkgdir/usr/share/applications/hyprly.desktop"
     install -Dm644 assets/logo.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/logo.png"
+    install -Dm644 assets/icons/*.svg -t "$pkgdir/usr/share/hyprly/icons"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 assets/icons/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LUCIDE-LICENSE"
 }

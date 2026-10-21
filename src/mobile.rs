@@ -21,7 +21,7 @@ use std::{
     io::Write,
     net::SocketAddr,
     path::Path,
-    sync::atomic::{AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicU64, AtomicU8, AtomicUsize},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -49,7 +49,9 @@ pub struct MobileHub {
     server_certificate: Arc<String>,
     server_key: Arc<String>,
     connected_clients: Arc<AtomicUsize>,
+    local_connected: Arc<AtomicBool>,
     connected: watch::Sender<bool>,
+    answer_target: Arc<AtomicU8>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,11 +59,12 @@ pub enum MobileCommand {
     Pause,
     Resume,
     ClearTranscript,
+    TranscribeRecentAudio,
     UpdateContext(String),
 }
 
 impl MobileHub {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(answer_target: &str) -> anyhow::Result<Self> {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -89,8 +92,15 @@ impl MobileHub {
             server_certificate: Arc::new(server_certificate),
             server_key: Arc::new(server_key),
             connected_clients: Arc::new(AtomicUsize::new(0)),
+            local_connected: Arc::new(AtomicBool::new(false)),
             connected,
+            answer_target: Arc::new(AtomicU8::new(answer_target_code(answer_target))),
         })
+    }
+
+    pub fn set_answer_target(&self, target: &str) {
+        self.answer_target
+            .store(answer_target_code(target), Ordering::Relaxed);
     }
 
     pub fn pairing_info(&self) -> serde_json::Value {
@@ -170,6 +180,37 @@ impl MobileHub {
 
     pub fn subscribe_commands(&self) -> broadcast::Receiver<MobileCommand> {
         self.commands.subscribe()
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<String> {
+        self.events.subscribe()
+    }
+
+    pub fn set_local_connected(&self, connected: bool) {
+        self.local_connected.store(connected, Ordering::Relaxed);
+        self.connected
+            .send_replace(connected || self.connected_clients.load(Ordering::Relaxed) > 0);
+    }
+
+    pub fn pair_local(&self, code: &str) -> bool {
+        if code.trim() != self.code.as_str() {
+            return false;
+        }
+        self.set_local_connected(true);
+        true
+    }
+
+    pub fn local_is_connected(&self) -> bool {
+        self.local_connected.load(Ordering::Relaxed)
+    }
+
+    pub fn command(&self, command: MobileCommand) {
+        match command {
+            MobileCommand::Pause => self.paused.store(true, Ordering::Relaxed),
+            MobileCommand::Resume => self.paused.store(false, Ordering::Relaxed),
+            _ => {}
+        }
+        let _ = self.commands.send(command);
     }
 
     pub fn subscribe_connection(&self) -> watch::Receiver<bool> {
@@ -296,6 +337,10 @@ async fn styles() -> Response {
         include_bytes!("../mobile/styles.css"),
         "text/css; charset=utf-8",
     )
+}
+
+async fn rewind_10_icon() -> Response {
+    static_asset_response(include_bytes!("../assets/icons/rewind-10.svg"), "image/svg+xml")
 }
 
 async fn script() -> Response {
@@ -454,6 +499,14 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
             event = events.recv() => {
                 match event {
                     Ok(event) => {
+                        if hub.answer_target.load(Ordering::Relaxed) == 1
+                            && serde_json::from_str::<serde_json::Value>(&event)
+                                .ok()
+                                .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+                                .is_some_and(|event_type| matches!(event_type.as_str(), "answer_start" | "answer_token" | "answer" | "topic_reset"))
+                        {
+                            continue;
+                        }
                         if socket.send(Message::Text(event.into())).await.is_err() {
                             break;
                         }
@@ -477,12 +530,17 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                                 Some("clear_transcript") => {
                                     let _ = hub.commands.send(MobileCommand::ClearTranscript);
                                 }
+                                Some("transcribe_recent_audio") => {
+                                    let _ = hub.commands.send(MobileCommand::TranscribeRecentAudio);
+                                }
                                 Some("update_context") => {
                                     let resume = cmd.get("resume").and_then(|v| v.as_str()).unwrap_or("");
+                                    let projects = cmd.get("projects").and_then(|v| v.as_str()).unwrap_or("");
                                     let job = cmd.get("job_description").and_then(|v| v.as_str()).unwrap_or("");
                                     let company = cmd.get("company").and_then(|v| v.as_str()).unwrap_or("");
                                     let context = [
                                         ("Resume", resume),
+                                        ("Project descriptions", projects),
                                         ("Job description", job),
                                         ("Company", company),
                                     ].into_iter()
@@ -503,7 +561,16 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
         }
     }
     if hub.connected_clients.fetch_sub(1, Ordering::Relaxed) == 1 {
-        hub.connected.send_replace(false);
+        hub.connected
+            .send_replace(hub.local_connected.load(Ordering::Relaxed));
+    }
+}
+
+fn answer_target_code(target: &str) -> u8 {
+    match target {
+        "floating" => 1,
+        "both" => 2,
+        _ => 0,
     }
 }
 
@@ -514,6 +581,7 @@ pub fn start(hub: MobileHub) {
             let https_app = Router::new()
                 .route("/", get(index))
                 .route("/styles.css", get(styles))
+                .route("/rewind-10.svg", get(rewind_10_icon))
                 .route("/app.js", get(script))
                 .route("/logo.png", get(logo))
                 .route("/logo-text.png", get(logo_text))

@@ -40,7 +40,7 @@ tokio-util = "0.7"
 qrcode = { version = "0.14", default-features = false }
 rcgen = "0.14"
 sha2 = "0.10"
-gtk4 = "0.9"
+gtk4 = { version = "0.9", features = ["v4_6"] }
 ksni = "0.3"
 toml_edit = "0.22"
 png = "0.17"

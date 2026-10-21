@@ -29,6 +29,73 @@ pub struct ScreenConfig {
     pub vision_model: String,
     #[serde(default)]
     pub mouse_gesture: Option<MouseGesture>,
+    #[serde(default = "default_answer_target")]
+    pub answer_target: String,
+    #[serde(default)]
+    pub overlay_window: OverlayWindowConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
+pub struct OverlayWindowConfig {
+    #[serde(default = "default_overlay_min_width")]
+    pub min_width: u32,
+    #[serde(default = "default_overlay_width")]
+    pub width: u32,
+    #[serde(default = "default_overlay_max_width")]
+    pub max_width: u32,
+    #[serde(default = "default_overlay_min_height")]
+    pub min_height: u32,
+    #[serde(default = "default_overlay_height")]
+    pub height: u32,
+    #[serde(default = "default_overlay_max_height")]
+    pub max_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<i32>,
+}
+
+impl Default for OverlayWindowConfig {
+    fn default() -> Self {
+        Self {
+            min_width: default_overlay_min_width(),
+            width: default_overlay_width(),
+            max_width: default_overlay_max_width(),
+            min_height: default_overlay_min_height(),
+            height: default_overlay_height(),
+            max_height: default_overlay_max_height(),
+            position_x: None,
+            position_y: None,
+        }
+    }
+}
+
+fn default_overlay_min_width() -> u32 {
+    320
+}
+
+fn default_overlay_width() -> u32 {
+    643
+}
+
+fn default_overlay_max_width() -> u32 {
+    1200
+}
+
+fn default_overlay_min_height() -> u32 {
+    120
+}
+
+fn default_overlay_height() -> u32 {
+    189
+}
+
+fn default_overlay_max_height() -> u32 {
+    378
+}
+
+fn default_answer_target() -> String {
+    "webpage".to_string()
 }
 
 impl Default for ScreenConfig {
@@ -36,6 +103,8 @@ impl Default for ScreenConfig {
         Self {
             vision_model: default_vision_model(),
             mouse_gesture: None,
+            answer_target: default_answer_target(),
+            overlay_window: OverlayWindowConfig::default(),
         }
     }
 }
@@ -255,6 +324,18 @@ impl Config {
             screen.remove("mouse_gesture");
         }
 
+        Self::write_config(&path, &document.to_string())
+    }
+
+    pub fn save_answer_target(target: &str) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        let mut document = read_config_document(&path)?;
+        let screen = table_section_mut(&mut document, "screen")?;
+        let value = match target {
+            "floating" | "both" => target,
+            _ => "webpage",
+        };
+        screen["answer_target"] = toml_edit::value(value);
         Self::write_config(&path, &document.to_string())
     }
 

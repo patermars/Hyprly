@@ -32,3 +32,21 @@ language = "en"
 confidence_threshold = 0.0
 # Stop a speech segment after this much trailing silence.
 endpoint_silence_ms = 500
+
+[screen]
+vision_model = "qwen/qwen3.8-27b"
+answer_target = "webpage"
+
+# Window sizes are GTK logical pixels. The compositor may scale them to
+# physical display pixels according to the monitor's scale setting.
+[screen.overlay_window]
+min_width = 320
+width = 643
+max_width = 1200
+min_height = 120
+height = 189
+max_height = 378
+# Settings > Floating saves custom coordinates here when you move the sample.
+# Leave both unset to center the answer window when it opens.
+# position_x = 100
+# position_y = 100

@@ -14,11 +14,13 @@ const DOM = {
   contextToggle: document.getElementById('context-toggle'),
   contextClose: document.getElementById('context-close'),
   contextResume: document.getElementById('context-resume'),
+  contextProjects: document.getElementById('context-projects'),
   contextJob: document.getElementById('context-job'),
   contextCompany: document.getElementById('context-company'),
   saveContext: document.getElementById('btn-save-context'),
   contextSaveStatus: document.getElementById('context-save-status'),
   resumeFile: document.getElementById('resume-file'),
+  projectsFile: document.getElementById('projects-file'),
   jobFile: document.getElementById('job-file'),
   companyFile: document.getElementById('company-file'),
   answerCard: document.getElementById('answer-card'),
@@ -32,6 +34,7 @@ const DOM = {
   answerCode: document.getElementById('answer-code'),
   controlBar: document.getElementById('control-bar'),
   btnPause: document.getElementById('btn-pause'),
+  btnRewind10: document.getElementById('btn-rewind-10'),
   btnClear: document.getElementById('btn-clear'),
   pipelineStatus: document.getElementById('pipeline-status'),
   listening: document.getElementById('listening'),
@@ -373,12 +376,14 @@ DOM.qrScanner.addEventListener('click', event => { if (event.target === DOM.qrSc
 try {
   const savedContext = JSON.parse(localStorage.getItem('hyprly-interview-context') || '{}');
   DOM.contextResume.value = savedContext.resume || '';
+  DOM.contextProjects.value = savedContext.projects || '';
   DOM.contextJob.value = savedContext.job_description || '';
   DOM.contextCompany.value = savedContext.company || '';
 } catch (_) {}
 function sendContext() {
   const context = {
     resume: DOM.contextResume.value,
+    projects: DOM.contextProjects.value,
     job_description: DOM.contextJob.value,
     company: DOM.contextCompany.value
   };
@@ -437,6 +442,7 @@ async function extractFiles(fileList, target, status) {
 }
 const fileTargets = {
   'resume-file': [DOM.contextResume, document.getElementById('resume-file-status')],
+  'projects-file': [DOM.contextProjects, document.getElementById('projects-file-status')],
   'job-file': [DOM.contextJob, document.getElementById('job-file-status')],
   'company-file': [DOM.contextCompany, document.getElementById('company-file-status')]
 };
@@ -475,6 +481,12 @@ DOM.btnPause.onclick = () => {
   DOM.btnPause.className = paused ? 'active' : '';
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: paused ? 'pause' : 'resume' }));
+  }
+};
+
+DOM.btnRewind10.onclick = () => {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'transcribe_recent_audio' }));
   }
 };
 DOM.btnClear.onclick = () => {
