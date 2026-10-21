@@ -535,10 +535,12 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                                 }
                                 Some("update_context") => {
                                     let resume = cmd.get("resume").and_then(|v| v.as_str()).unwrap_or("");
+                                    let projects = cmd.get("projects").and_then(|v| v.as_str()).unwrap_or("");
                                     let job = cmd.get("job_description").and_then(|v| v.as_str()).unwrap_or("");
                                     let company = cmd.get("company").and_then(|v| v.as_str()).unwrap_or("");
                                     let context = [
                                         ("Resume", resume),
+                                        ("Project descriptions", projects),
                                         ("Job description", job),
                                         ("Company", company),
                                     ].into_iter()

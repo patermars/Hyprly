@@ -112,7 +112,7 @@ struct AppState {
     application: gtk::Application,
     window: gtk::ApplicationWindow,
     api_key: gtk::Entry,
-    backup_keys: Vec<gtk::Entry>,
+    backup_keys: Rc<std::cell::RefCell<Vec<gtk::Entry>>>,
     status: gtk::Label,
     code: gtk::Label,
     setup_url: gtk::LinkButton,
@@ -400,6 +400,11 @@ pub fn run_answer_overlay() {
             "Paste the job description or key requirements",
             4,
         );
+        let (projects_label, projects) = overlay_context_field(
+            "Project descriptions",
+            "Describe projects you have built and your role in them",
+            4,
+        );
         let (company_label, company) = overlay_context_field(
             "Company notes",
             "Paste company, team, product, or other key details",
@@ -408,6 +413,9 @@ pub fn run_answer_overlay() {
         context_page.append(&resume_label);
         context_page.append(&overlay_context_upload(&resume.1));
         context_page.append(&resume.0);
+        context_page.append(&projects_label);
+        context_page.append(&overlay_context_upload(&projects.1));
+        context_page.append(&projects.0);
         context_page.append(&job_label);
         context_page.append(&overlay_context_upload(&job.1));
         context_page.append(&job.0);
@@ -477,6 +485,7 @@ pub fn run_answer_overlay() {
         });
         save_context.connect_clicked({
             let resume = resume.1.clone();
+            let projects = projects.1.clone();
             let job = job.1.clone();
             let company = company.1.clone();
             let context_saved = context_saved.clone();
@@ -484,6 +493,7 @@ pub fn run_answer_overlay() {
                 overlay_send(serde_json::json!({
                     "type":"update_context",
                     "resume": overlay_buffer_text(&resume),
+                    "projects": overlay_buffer_text(&projects),
                     "job_description": overlay_buffer_text(&job),
                     "company": overlay_buffer_text(&company),
                 }));
@@ -1327,31 +1337,30 @@ fn build_window(application: &gtk::Application) {
     let show_key = gtk::Button::with_label("Show");
     key_row.append(&show_key);
     setup_card.append(&key_row);
-    let mut backup_keys = Vec::new();
-    for index in 2..=crate::config::MAX_API_KEYS {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let entry = gtk::Entry::builder()
-            .placeholder_text(format!("Backup key {index} (optional)"))
-            .visibility(false)
-            .hexpand(true)
-            .build();
-        row.append(&entry);
-        let show = gtk::Button::with_label("Show");
-        let visible = Rc::new(std::cell::Cell::new(false));
-        show.connect_clicked({
-            let entry = entry.clone();
-            let visible = visible.clone();
-            move |button| {
-                let next = !visible.get();
-                visible.set(next);
-                entry.set_visibility(next);
-                button.set_label(if next { "Hide" } else { "Show" });
-            }
-        });
-        row.append(&show);
-        setup_card.append(&row);
-        backup_keys.push(entry);
+    let backup_keys = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let backup_rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    setup_card.append(&backup_rows);
+    let add_key = gtk::Button::with_label("Add more");
+    set_button_icon(&add_key, "plus");
+    add_key.set_hexpand(true);
+    if let Some(content) = add_key.child() {
+        content.set_halign(gtk::Align::Center);
     }
+    setup_card.append(&add_key);
+    add_key.connect_clicked({
+        let backup_keys = backup_keys.clone();
+        let backup_rows = backup_rows.clone();
+        let add_key = add_key.clone();
+        move |_| {
+            let index = backup_keys.borrow().len() + 2;
+            if index > crate::config::MAX_API_KEYS { return; }
+            let (row, entry, remove) = backup_key_row(index);
+            backup_rows.append(&row);
+            backup_keys.borrow_mut().push(entry.clone());
+            wire_backup_key_delete(&remove, &row, &entry, &backup_rows, &backup_keys, &add_key);
+            add_key.set_visible(backup_keys.borrow().len() + 1 < crate::config::MAX_API_KEYS);
+        }
+    });
     let failover_note = gtk::Label::new(Some(
         "If a request fails or times out, Hyprly tries the next saved key.",
     ));
@@ -1705,9 +1714,14 @@ fn build_window(application: &gtk::Application) {
         api_key.grab_focus();
     } else {
         api_key.set_text(&configured_keys[0]);
-        for (entry, key) in backup_keys.iter().zip(configured_keys.iter().skip(1)) {
+        for (index, key) in configured_keys.iter().skip(1).enumerate() {
+            let (row, entry, remove) = backup_key_row(index + 2);
             entry.set_text(key);
+            backup_rows.append(&row);
+            backup_keys.borrow_mut().push(entry.clone());
+            wire_backup_key_delete(&remove, &row, &entry, &backup_rows, &backup_keys, &add_key);
         }
+        add_key.set_visible(backup_keys.borrow().len() + 1 < crate::config::MAX_API_KEYS);
     }
 }
 
@@ -2074,16 +2088,20 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
         .default_width(1200)
         .default_height(680)
         .build();
+    dialog.add_css_class("settings-root");
     let content = dialog.content_area();
+    content.add_css_class("settings-content");
     content.set_spacing(10);
     content.set_margin_top(20);
     content.set_margin_bottom(20);
     content.set_margin_start(24);
     content.set_margin_end(24);
     let tabs = gtk::Notebook::new();
+    tabs.add_css_class("settings-notebook");
     tabs.set_hexpand(true);
     tabs.set_vexpand(true);
     let api_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    api_page.add_css_class("settings-page");
     api_page.set_hexpand(true);
     api_page.set_margin_top(20);
     api_page.set_margin_bottom(20);
@@ -2125,6 +2143,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     api_page.append(&settings_row("Answer length", "The maximum size of an AI answer. Higher values allow longer replies and use more of your quota.", &max_tokens));
 
     let audio_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    audio_page.add_css_class("settings-page");
     audio_page.set_hexpand(true);
     audio_page.set_margin_top(20);
     audio_page.set_margin_bottom(20);
@@ -2259,6 +2278,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     ));
 
     let context_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    context_page.add_css_class("settings-page");
     context_page.set_hexpand(true);
     context_page.set_margin_top(20);
     context_page.set_margin_bottom(20);
@@ -2296,6 +2316,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     ));
 
     let screen_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    screen_page.add_css_class("settings-page");
     screen_page.set_hexpand(true);
     screen_page.set_margin_top(20);
     screen_page.set_margin_bottom(20);
@@ -2345,6 +2366,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     screen_page.append(&screen_privacy_note);
 
     let floating_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    floating_page.add_css_class("settings-page");
     floating_page.set_hexpand(true);
     floating_page.set_margin_top(20);
     floating_page.set_margin_bottom(20);
@@ -2838,7 +2860,7 @@ fn theme_provider() -> gtk::CssProvider {
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
         );
     }
     provider
@@ -2893,6 +2915,14 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
     let css = format!(
         r#"
       window, .app-root {{ background: {bg}; color: {text}; }}
+      window.settings-root, .settings-content, .settings-page, notebook.settings-notebook, notebook.settings-notebook > stack {{ background: {bg}; color: {text}; }}
+      notebook.settings-notebook > header, notebook.settings-notebook > header > tabs, notebook.settings-notebook > header > tabs > tab {{ background: {surface}; color: {secondary}; }}
+      notebook.settings-notebook > header > tabs > tab:checked {{ background: {raised}; color: {text}; border-color: {accent}; }}
+      .settings-root label {{ color: {text}; }}
+      .settings-root label.muted {{ color: {muted}; }}
+      .settings-root entry, .settings-root textview, .settings-root textview text, .settings-root dropdown, .settings-root dropdown button, .settings-root spinbutton, .settings-root checkbutton, .settings-root switch {{ color: {text}; background-color: {input}; }}
+      .settings-root scrolledwindow, .settings-root frame, .settings-root list, .settings-root row {{ background-color: {surface}; color: {text}; }}
+      .settings-root popover, .settings-root popover contents {{ background-color: {surface}; color: {text}; }}
       .app-header {{ min-height: 52px; padding: 0 0 11px; border-bottom: 1px solid {border}; }}
       .app-header separator {{ background: {border}; min-width: 1px; }}
       .app-header label.dim-label {{ font-size: 14px; }}
@@ -2968,11 +2998,64 @@ fn save_gui_theme(theme: &str) -> std::io::Result<()> {
     std::fs::write(path, theme)
 }
 
+fn backup_key_row(index: usize) -> (gtk::Box, gtk::Entry, gtk::Button) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let entry = gtk::Entry::builder()
+        .placeholder_text(format!("Backup key {index} (optional)"))
+        .visibility(false)
+        .hexpand(true)
+        .build();
+    row.append(&entry);
+    let show = gtk::Button::with_label("Show");
+    show.connect_clicked({
+        let entry = entry.clone();
+        let visible = Rc::new(std::cell::Cell::new(false));
+        move |button| {
+            let next = !visible.get();
+            visible.set(next);
+            entry.set_visibility(next);
+            button.set_label(if next { "Hide" } else { "Show" });
+        }
+    });
+    row.append(&show);
+    let remove = gtk::Button::new();
+    remove.set_child(Some(&asset_icon("trash", 17)));
+    remove.set_tooltip_text(Some("Remove this API key"));
+    remove.add_css_class("flat");
+    row.append(&remove);
+    (row, entry, remove)
+}
+
+fn wire_backup_key_delete(
+    button: &gtk::Button,
+    row: &gtk::Box,
+    entry: &gtk::Entry,
+    rows: &gtk::Box,
+    keys: &Rc<std::cell::RefCell<Vec<gtk::Entry>>>,
+    add_button: &gtk::Button,
+) {
+    let weak_row = row.downgrade();
+    button.connect_clicked({
+        let rows = rows.clone();
+        let keys = keys.clone();
+        let add_button = add_button.clone();
+        let entry = entry.clone();
+        move |_| {
+            keys.borrow_mut().retain(|candidate| candidate != &entry);
+            if let Some(row) = weak_row.upgrade() {
+                rows.remove(&row);
+            }
+            add_button.set_visible(keys.borrow().len() + 1 < crate::config::MAX_API_KEYS);
+        }
+    });
+}
+
 fn entered_api_keys(state: &AppState) -> Vec<String> {
     std::iter::once(state.api_key.text().to_string())
         .chain(
             state
                 .backup_keys
+                .borrow()
                 .iter()
                 .map(|entry| entry.text().to_string()),
         )
@@ -3717,7 +3800,7 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
             .set_text("Enter a Groq API key first.");
         return;
     }
-    state.borrow().status.set_text("Checking the Groq API key…");
+    state.borrow().status.set_text("Checking all Groq API keys…");
     let sender = state.borrow().event_tx.clone();
     std::thread::spawn(move || {
         let result = tokio::runtime::Builder::new_current_thread()
@@ -3729,7 +3812,7 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                     let client = reqwest::Client::builder()
                         .timeout(Duration::from_secs(12))
                         .build()?;
-                    let mut failures = Vec::new();
+                    let mut results = Vec::new();
                     for (index, key) in keys.iter().enumerate() {
                         match client
                             .get("https://api.groq.com/openai/v1/models")
@@ -3738,18 +3821,16 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                             .await
                         {
                             Ok(response) if response.status().is_success() => {
-                                let models: serde_json::Value = response
-                                    .json()
-                                    .await
-                                    .context("Groq returned an invalid models response")?;
-                                let model_count = models
-                                    .get("data")
-                                    .and_then(serde_json::Value::as_array)
-                                    .map_or(0, Vec::len);
-                                return Ok(format!(
-                                    "Groq API key {} works. {model_count} models available.",
-                                    index + 1
-                                ));
+                                match response.json::<serde_json::Value>().await {
+                                    Ok(models) => {
+                                        let model_count = models
+                                            .get("data")
+                                            .and_then(serde_json::Value::as_array)
+                                            .map_or(0, Vec::len);
+                                        results.push(format!("Key {} works ({model_count} models)", index + 1));
+                                    }
+                                    Err(error) => results.push(format!("Key {} returned an invalid response: {error}", index + 1)),
+                                }
                             }
                             Ok(response) => {
                                 let status = response.status();
@@ -3765,16 +3846,16 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                                     })
                                     .filter(|detail| !detail.trim().is_empty())
                                     .unwrap_or_else(|| body.trim().chars().take(240).collect());
-                                failures.push(if detail.is_empty() {
+                                results.push(if detail.is_empty() {
                                     format!("Key {}: HTTP {status}", index + 1)
                                 } else {
                                     format!("Key {}: HTTP {status}: {detail}", index + 1)
                                 });
                             }
-                            Err(error) => failures.push(format!("Key {}: {error}", index + 1)),
+                            Err(error) => results.push(format!("Key {}: {error}", index + 1)),
                         }
                     }
-                    anyhow::bail!("All Groq keys failed. {}", failures.join("; "));
+                    Ok(format!("Groq API check: {}.", results.join("; ")))
                 })
             });
         let message = match result {

@@ -247,6 +247,7 @@ fn run_daemon() -> Result<()> {
                     Some("update_context") => {
                         let context = [
                             ("Resume", event.get("resume").and_then(|v| v.as_str()).unwrap_or("")),
+                            ("Project descriptions", event.get("projects").and_then(|v| v.as_str()).unwrap_or("")),
                             ("Job description", event.get("job_description").and_then(|v| v.as_str()).unwrap_or("")),
                             ("Company", event.get("company").and_then(|v| v.as_str()).unwrap_or("")),
                         ]
