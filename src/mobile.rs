@@ -59,6 +59,7 @@ pub enum MobileCommand {
     Pause,
     Resume,
     ClearTranscript,
+    TranscribeRecentAudio,
     UpdateContext(String),
 }
 
@@ -338,6 +339,10 @@ async fn styles() -> Response {
     )
 }
 
+async fn rewind_10_icon() -> Response {
+    static_asset_response(include_bytes!("../assets/icons/rewind-10.svg"), "image/svg+xml")
+}
+
 async fn script() -> Response {
     static_asset_response(
         include_bytes!("../mobile/app.js"),
@@ -525,6 +530,9 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                                 Some("clear_transcript") => {
                                     let _ = hub.commands.send(MobileCommand::ClearTranscript);
                                 }
+                                Some("transcribe_recent_audio") => {
+                                    let _ = hub.commands.send(MobileCommand::TranscribeRecentAudio);
+                                }
                                 Some("update_context") => {
                                     let resume = cmd.get("resume").and_then(|v| v.as_str()).unwrap_or("");
                                     let job = cmd.get("job_description").and_then(|v| v.as_str()).unwrap_or("");
@@ -571,6 +579,7 @@ pub fn start(hub: MobileHub) {
             let https_app = Router::new()
                 .route("/", get(index))
                 .route("/styles.css", get(styles))
+                .route("/rewind-10.svg", get(rewind_10_icon))
                 .route("/app.js", get(script))
                 .route("/logo.png", get(logo))
                 .route("/logo-text.png", get(logo_text))

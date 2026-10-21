@@ -8,7 +8,10 @@ use crate::{
 };
 use anyhow::Result;
 use std::{
-    collections::BTreeMap, io::Cursor, process::Stdio, sync::atomic::Ordering,
+    collections::{BTreeMap, VecDeque},
+    io::Cursor,
+    process::Stdio,
+    sync::atomic::Ordering,
     time::Instant as StdInstant,
 };
 use tokio::{
@@ -235,11 +238,20 @@ pub async fn run(
     let mut transcription_tasks = tokio::task::JoinSet::new();
     let mut pending_transcriptions = BTreeMap::new();
     let mut next_sequence = 0;
+    let mut recent_audio = VecDeque::<u8>::with_capacity(AUDIO_SAMPLE_RATE as usize * 20);
+    let recent_audio_limit = AUDIO_SAMPLE_RATE as usize * 10 * std::mem::size_of::<i16>();
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             Some(chunk) = chunk_rx.recv() => {
+                if chunk.wav.len() > 44 {
+                    recent_audio.extend(&chunk.wav[44..]);
+                    if recent_audio.len() > recent_audio_limit {
+                        let excess = recent_audio.len() - recent_audio_limit;
+                        recent_audio.drain(..excess);
+                    }
+                }
                 let result_tx = transcription_tx.clone();
                 let audio_for_task = audio.clone();
                 let groq_for_task = groq.clone();
@@ -341,6 +353,48 @@ pub async fn run(
                     Ok(MobileCommand::ClearTranscript) => {
                         state.transcript.clear();
                         mobile.transcript("");
+                    }
+                    Ok(MobileCommand::TranscribeRecentAudio) => {
+                        if recent_audio.is_empty() {
+                            mobile.status("ready", "No recent audio available yet");
+                            continue;
+                        }
+                        mobile.status("transcribing", "Transcribing the last 10 seconds");
+                        let wav = encode_wav(&recent_audio.iter().copied().collect::<Vec<_>>())?;
+                        match groq
+                            .transcribe(&wav, &audio.transcription_model, &audio.language)
+                            .await
+                        {
+                            Ok(result) if !result.text.trim().is_empty() => {
+                                if let Some(confidence) = result.confidence {
+                                    if confidence < audio.confidence_threshold {
+                                        mobile.status("ready", "Low-confidence transcription skipped");
+                                        continue;
+                                    }
+                                }
+                                let cleaned =
+                                    transcript::clean(result.text.trim(), &state.clean_config);
+                                if !cleaned.trim().is_empty() {
+                                    if topic::is_new_topic(&state.transcript, &cleaned) {
+                                        state.transcript.clear();
+                                        if let Some(token) = state.pending_ai.take() {
+                                            token.cancel();
+                                        }
+                                        mobile.topic_changed();
+                                    }
+                                    append_transcript(&mut state.transcript, &cleaned);
+                                    mobile.transcript(&state.transcript);
+                                    state.debounce_deadline = Some(Instant::now());
+                                } else {
+                                    mobile.status("ready", "No speech found in recent audio");
+                                }
+                            }
+                            Ok(_) => mobile.status("ready", "No speech found in recent audio"),
+                            Err(error) => {
+                                eprintln!("Recent audio transcription error: {error:#}");
+                                mobile.status("error", "Recent audio transcription failed");
+                            }
+                        }
                     }
                     Ok(MobileCommand::UpdateContext(value)) => {
                         context.set_web_context(value);

@@ -32,6 +32,7 @@ const DOM = {
   answerCode: document.getElementById('answer-code'),
   controlBar: document.getElementById('control-bar'),
   btnPause: document.getElementById('btn-pause'),
+  btnRewind10: document.getElementById('btn-rewind-10'),
   btnClear: document.getElementById('btn-clear'),
   pipelineStatus: document.getElementById('pipeline-status'),
   listening: document.getElementById('listening'),
@@ -475,6 +476,12 @@ DOM.btnPause.onclick = () => {
   DOM.btnPause.className = paused ? 'active' : '';
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: paused ? 'pause' : 'resume' }));
+  }
+};
+
+DOM.btnRewind10.onclick = () => {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'transcribe_recent_audio' }));
   }
 };
 DOM.btnClear.onclick = () => {

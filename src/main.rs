@@ -241,6 +241,9 @@ fn run_daemon() -> Result<()> {
                     Some("clear_transcript") => {
                         screen_hub.command(mobile::MobileCommand::ClearTranscript)
                     }
+                    Some("transcribe_recent_audio") => {
+                        screen_hub.command(mobile::MobileCommand::TranscribeRecentAudio)
+                    }
                     Some("update_context") => {
                         let context = [
                             ("Resume", event.get("resume").and_then(|v| v.as_str()).unwrap_or("")),

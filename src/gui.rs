@@ -272,6 +272,18 @@ pub fn run_answer_overlay() {
         connection.add_css_class("overlay-status");
         let pause = gtk::Button::with_label("Pause");
         pause.add_css_class("overlay-control");
+        let transcribe_recent = gtk::Button::new();
+        transcribe_recent.set_tooltip_text(Some("Transcribe the last 10 seconds as one audio clip"));
+        transcribe_recent.add_css_class("overlay-control");
+        let transcribe_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let rewind_icon = gtk::Image::from_file(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/icons/rewind-10.svg"
+        ));
+        rewind_icon.set_pixel_size(18);
+        transcribe_content.append(&rewind_icon);
+        transcribe_content.append(&gtk::Label::new(Some("Ask")));
+        transcribe_recent.set_child(Some(&transcribe_content));
         let clear = gtk::Button::with_label("Clear");
         clear.add_css_class("overlay-control");
         let minimize = gtk::Button::from_icon_name("window-close-symbolic");
@@ -284,6 +296,7 @@ pub fn run_answer_overlay() {
         header.append(&page_switcher);
         header.append(&connection);
         header.append(&pause);
+        header.append(&transcribe_recent);
         header.append(&clear);
         header.append(&minimize);
         root.append(&header);
@@ -444,6 +457,9 @@ pub fn run_answer_overlay() {
                 transcript.set_tooltip_text(Some("No audio detected yet."));
                 overlay_send(serde_json::json!({"type":"clear_transcript"}));
             }
+        });
+        transcribe_recent.connect_clicked(|_| {
+            overlay_send(serde_json::json!({"type":"transcribe_recent_audio"}));
         });
         copy_code.connect_clicked({
             let answer_text = answer_text.clone();
