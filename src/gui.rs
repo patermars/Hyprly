@@ -437,12 +437,12 @@ pub fn run_answer_overlay() {
         context_scroll.set_propagate_natural_height(false);
         pages.add_titled(&context_scroll, Some("context"), "Context");
 
-        overlay_apply_style(&theme_provider);
+        overlay_apply_style(&theme_provider, &load_gui_theme());
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
                 &display,
                 &theme_provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                gtk::STYLE_PROVIDER_PRIORITY_USER,
             );
         }
 
@@ -1032,12 +1032,21 @@ fn overlay_buffer_text(buffer: &gtk::TextBuffer) -> String {
         .to_string()
 }
 
-fn overlay_apply_style(provider: &gtk::CssProvider) {
+fn overlay_apply_style(provider: &gtk::CssProvider, theme: &str) {
     let base_css = ".overlay-root { background: rgba(11, 14, 20, 0.94); color: #f1f5f9; padding: 12px; } .overlay-island { background: rgba(18, 21, 30, 0.88); border: 1px solid rgba(255,255,255,0.14); border-radius: 24px; padding: 8px 12px; } .hud-card { background: linear-gradient(to bottom, rgba(45,52,70,0.38), rgba(13,16,23,0.90)); border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; padding: 14px; } .hud-context-strip, .hud-controls { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 8px; } .overlay-title, .overlay-heading { color: #7dd3fc; } .overlay-status { color: #a1a1aa; font-size: 10px; } .hud-inner-panel, .hud-answer-card { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 10px; } .hud-answer-card { border-left: 4px solid #38bdf8; } .overlay-transcript, .overlay-answer { color: #f1f5f9; } .overlay-answer { font-size: 15px; padding: 8px; } .overlay-control, .overlay-pair-code { border-radius: 12px; padding: 6px 12px; }";
     let translucent_surface = ".overlay-root { background: transparent; } .hud-card { background: linear-gradient(to bottom, rgba(82,86,94,0.30), rgba(48,51,57,0.50)); }";
-    let css = format!(
+    let mut css = format!(
         "{base_css} {translucent_surface} window.answer-window, window.overlay-launcher-window {{ background: transparent; }} button.overlay-launcher {{ min-width: 64px; min-height: 64px; padding: 0; border: 1px solid rgba(125,211,252,0.48); border-radius: 999px; background: rgba(18,21,30,0.96); box-shadow: 0 4px 18px rgba(0,0,0,0.36); }} button.overlay-launcher:hover {{ background: rgba(30,37,51,0.98); }} .overlay-root {{ background: transparent; border: none; border-radius: 0; padding: 0; }} .hud-card {{ padding: 2px; border: none; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 0; }} .overlay-answer {{ background: transparent; padding: 2px 0; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
     );
+    let (top_bg, top_raised, top_fg, top_accent, top_selected_fg, top_border) = match theme {
+        "paper" => ("#ffffff", "#f4f6f8", "#202a35", "#367a52", "#ffffff", "rgba(36,49,67,.18)"),
+        "aurora" => ("#0d1e22", "#163138", "#eaf8f4", "#75e2c2", "#102016", "rgba(120,221,207,.24)"),
+        _ => ("#141821", "#1c2230", "#f3f5fa", "#c6f36a", "#102016", "rgba(160,177,207,.22)"),
+    };
+    css.push_str(&format!(
+        ".overlay-island {{ background: {top_bg}; color: {top_fg}; border-color: {top_border}; }} .overlay-island label, .overlay-island button {{ color: {top_fg}; }} .overlay-island .overlay-heading {{ color: {top_accent}; }} .overlay-island button {{ background: {top_raised}; border: 1px solid {top_border}; }} .overlay-island button:checked, .overlay-island button:checked label {{ color: {top_selected_fg}; background: {top_accent}; border-color: {top_accent}; }} .overlay-island button:hover {{ border-color: {top_accent}; }}"
+    ));
+    css.push_str(".overlay-root stack, .overlay-root stack *, .overlay-root stack *:hover, .overlay-root stack *:focus, .overlay-root stack *:checked { background: transparent; background-color: transparent; background-image: none; box-shadow: none; border-color: transparent; } .overlay-root stack button, .overlay-root stack entry, .overlay-root stack textview, .overlay-root stack textview text, .overlay-root stack .context-upload-dropzone, .overlay-root stack .hud-answer-flow { background: transparent; background-color: transparent; background-image: none; box-shadow: none; border-color: transparent; }");
     provider.load_from_data(&css);
 }
 
@@ -2418,12 +2427,12 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
             preview.set_decorated(true);
             preview.set_resizable(true);
             let preview_theme = gtk::CssProvider::new();
-            overlay_apply_style(&preview_theme);
+            overlay_apply_style(&preview_theme, &load_gui_theme());
             if let Some(display) = gtk::gdk::Display::default() {
                 gtk::style_context_add_provider_for_display(
                     &display,
                     &preview_theme,
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    gtk::STYLE_PROVIDER_PRIORITY_USER,
                 );
             }
 
