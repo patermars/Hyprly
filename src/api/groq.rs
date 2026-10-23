@@ -45,19 +45,35 @@ impl GroqClient {
     ) -> Result<reqwest::Response> {
         let mut last_error = None;
         for key in &self.api_keys {
-            match build_request(key).send().await {
-                Ok(response) if response.status().is_success() => return Ok(response),
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    last_error = Some(anyhow::anyhow!(
-                        "{failure_label} failed with status {status}: {body}"
-                    ));
-                }
-                Err(error) => last_error = Some(error.into()),
+            if key.trim().is_empty() {
+                continue;
+            }
+            match self
+                .send_request(|| build_request(key), failure_label)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => last_error = Some(error),
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured")))
+    }
+
+    async fn send_request(
+        &self,
+        build_request: impl FnOnce() -> reqwest::RequestBuilder,
+        failure_label: &str,
+    ) -> Result<reqwest::Response> {
+        let response = build_request().send().await?;
+        if response.status().is_success() {
+            return Ok(response);
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Err(anyhow::anyhow!(
+            "{failure_label} failed with status {status}: {body}"
+        ))
     }
 
     pub async fn transcribe(
@@ -190,14 +206,18 @@ impl GroqClient {
                 continue;
             }
             match self
-                .client
-                .post(GROQ_API_URL)
-                .bearer_auth(key)
-                .json(&request)
-                .send()
+                .send_request(
+                    || {
+                        self.client
+                            .post(GROQ_API_URL)
+                            .bearer_auth(key)
+                            .json(&request)
+                    },
+                    "Groq vision request",
+                )
                 .await
             {
-                Ok(response) if response.status().is_success() => {
+                Ok(response) => {
                     let body: serde_json::Value = response.json().await?;
                     if let Some(answer) = body
                         .pointer("/choices/0/message/content")
@@ -207,16 +227,7 @@ impl GroqClient {
                     }
                     last_error = Some(anyhow::anyhow!("Groq returned an empty vision response"));
                 }
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    last_error = Some(anyhow::anyhow!(
-                        "Groq vision request failed with status {}: {}",
-                        status,
-                        body
-                    ));
-                }
-                Err(error) => last_error = Some(error.into()),
+                Err(error) => last_error = Some(error),
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Groq API keys configured")))
@@ -294,7 +305,8 @@ fn parse_sse_line(line: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sse_line;
+    use super::{parse_sse_line, GroqClient};
+    use crate::config::ApiConfig;
 
     #[test]
     fn parses_content_from_an_sse_data_line() {
@@ -304,5 +316,19 @@ mod tests {
         );
         assert_eq!(parse_sse_line(b"data: [DONE]"), None);
         assert_eq!(parse_sse_line(b"event: ping"), None);
+    }
+
+    #[tokio::test]
+    async fn skips_empty_api_keys_without_sending_a_request() {
+        let client = GroqClient::new(&ApiConfig::default());
+        let error = client
+            .send_with_api_keys(
+                |_| panic!("empty keys must not send requests"),
+                "API request",
+            )
+            .await
+            .expect_err("missing keys should return an error");
+
+        assert_eq!(error.to_string(), "No Groq API keys configured");
     }
 }

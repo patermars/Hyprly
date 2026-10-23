@@ -14,7 +14,6 @@ mod transcript;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use std::process::Command;
 use std::{env, fs, os::unix::fs::PermissionsExt};
 use tokio::runtime::Runtime;
 
@@ -97,7 +96,7 @@ fn run_doctor() -> Result<()> {
     let config_path = config::Config::config_path();
     let config = config::Config::load().context("Could not load Hyprly configuration")?;
     let has_api_key = !config.api.api_keys.is_empty();
-    let pipewire_ready = wpctl_status().is_ok_and(|output| output.status.success());
+    let pipewire_ready = pipewire::query_status().is_ok_and(|output| output.status.success());
     let grim_available = executable_in_path("grim");
 
     println!("Configuration: {}", config_path.display());
@@ -120,19 +119,13 @@ fn run_doctor() -> Result<()> {
 }
 
 fn list_audio_devices() -> Result<()> {
-    let output = wpctl_status()
+    let output = pipewire::query_status()
         .context("Could not run wpctl. Install WirePlumber and start the PipeWire user session.")?;
     if !output.status.success() {
         bail!("wpctl could not query the PipeWire session");
     }
     print!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(())
-}
-
-fn wpctl_status() -> std::io::Result<std::process::Output> {
-    Command::new(pipewire::WPCTL)
-        .args(pipewire::STATUS_ARGS)
-        .output()
 }
 
 fn executable_in_path(name: &str) -> bool {
@@ -236,29 +229,11 @@ fn run_daemon() -> Result<()> {
                             screen_hub.status("error", "That pairing code is incorrect");
                         }
                     }
-                    Some("pause") => screen_hub.command(mobile::MobileCommand::Pause),
-                    Some("resume") => screen_hub.command(mobile::MobileCommand::Resume),
-                    Some("clear_transcript") => {
-                        screen_hub.command(mobile::MobileCommand::ClearTranscript)
+                    _ => {
+                        if let Some(command) = mobile::MobileCommand::from_json(&event) {
+                            screen_hub.command(command);
+                        }
                     }
-                    Some("transcribe_recent_audio") => {
-                        screen_hub.command(mobile::MobileCommand::TranscribeRecentAudio)
-                    }
-                    Some("update_context") => {
-                        let context = [
-                            ("Resume", event.get("resume").and_then(|v| v.as_str()).unwrap_or("")),
-                            ("Project descriptions", event.get("projects").and_then(|v| v.as_str()).unwrap_or("")),
-                            ("Job description", event.get("job_description").and_then(|v| v.as_str()).unwrap_or("")),
-                            ("Company", event.get("company").and_then(|v| v.as_str()).unwrap_or("")),
-                        ]
-                        .into_iter()
-                        .filter(|(_, value)| !value.trim().is_empty())
-                        .map(|(label, value)| format!("### {label}\n{}", value.trim()))
-                        .collect::<Vec<_>>()
-                        .join("\n\n");
-                        screen_hub.command(mobile::MobileCommand::UpdateContext(context));
-                    }
-                    _ => {}
                 }
             }
         });

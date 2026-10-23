@@ -273,7 +273,8 @@ pub fn run_answer_overlay() {
         let pause = gtk::Button::with_label("Pause");
         pause.add_css_class("overlay-control");
         let transcribe_recent = gtk::Button::new();
-        transcribe_recent.set_tooltip_text(Some("Transcribe the last 10 seconds as one audio clip"));
+        transcribe_recent
+            .set_tooltip_text(Some("Transcribe the last 10 seconds as one audio clip"));
         transcribe_recent.add_css_class("overlay-control");
         let transcribe_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let rewind_icon = gtk::Image::from_file(concat!(
@@ -1039,9 +1040,30 @@ fn overlay_apply_style(provider: &gtk::CssProvider, theme: &str) {
         "{base_css} {translucent_surface} window.answer-window, window.overlay-launcher-window {{ background: transparent; }} button.overlay-launcher {{ min-width: 64px; min-height: 64px; padding: 0; border: 1px solid rgba(125,211,252,0.48); border-radius: 999px; background: rgba(18,21,30,0.96); box-shadow: 0 4px 18px rgba(0,0,0,0.36); }} button.overlay-launcher:hover {{ background: rgba(30,37,51,0.98); }} .overlay-root {{ background: transparent; border: none; border-radius: 0; padding: 0; }} .hud-card {{ padding: 2px; border: none; }} .hud-inner-panel {{ padding: 4px 10px; }} .hud-answer-flow {{ background: transparent; border: none; box-shadow: none; padding: 0; }} .overlay-answer {{ background: transparent; padding: 2px 0; font-size: 15px; }} .context-placeholder {{ opacity: 0.62; }} .hud-pairing {{ background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 8px; }} .context-upload-dropzone {{ background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 6px; }} .context-upload-dropzone.drop-active {{ background: rgba(56,189,248,0.14); border-color: rgba(56,189,248,0.75); }} .context-upload-status {{ font-size: 10px; opacity: 0.75; }} .hud-prompt-pill {{ background: rgba(37,99,235,0.72); color: #ffffff; border: 1px solid rgba(125,211,252,0.35); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 600; }} .overlay-title {{ min-width: 26px; }}"
     );
     let (top_bg, top_raised, top_fg, top_accent, top_selected_fg, top_border) = match theme {
-        "paper" => ("#ffffff", "#f4f6f8", "#202a35", "#367a52", "#ffffff", "rgba(36,49,67,.18)"),
-        "aurora" => ("#0d1e22", "#163138", "#eaf8f4", "#75e2c2", "#102016", "rgba(120,221,207,.24)"),
-        _ => ("#141821", "#1c2230", "#f3f5fa", "#c6f36a", "#102016", "rgba(160,177,207,.22)"),
+        "paper" => (
+            "#ffffff",
+            "#f4f6f8",
+            "#202a35",
+            "#367a52",
+            "#ffffff",
+            "rgba(36,49,67,.18)",
+        ),
+        "aurora" => (
+            "#0d1e22",
+            "#163138",
+            "#eaf8f4",
+            "#75e2c2",
+            "#102016",
+            "rgba(120,221,207,.24)",
+        ),
+        _ => (
+            "#141821",
+            "#1c2230",
+            "#f3f5fa",
+            "#c6f36a",
+            "#102016",
+            "rgba(160,177,207,.22)",
+        ),
     };
     css.push_str(&format!(
         ".overlay-island {{ background: {top_bg}; color: {top_fg}; border-color: {top_border}; }} .overlay-island label, .overlay-island button {{ color: {top_fg}; }} .overlay-island .overlay-heading {{ color: {top_accent}; }} .overlay-island button {{ background: {top_raised}; border: 1px solid {top_border}; }} .overlay-island button:checked, .overlay-island button:checked label {{ color: {top_selected_fg}; background: {top_accent}; border-color: {top_accent}; }} .overlay-island button:hover {{ border-color: {top_accent}; }}"
@@ -1112,8 +1134,8 @@ fn extract_answer_code(text: &str) -> String {
         let mut remaining = text;
         while let Some(code_start) = remaining.find('`') {
             let after_tick = &remaining[code_start + 1..];
-            if after_tick.starts_with("``") {
-                remaining = &after_tick[2..];
+            if let Some(stripped) = after_tick.strip_prefix("``") {
+                remaining = stripped;
                 continue;
             }
             let Some(code_end) = after_tick.find('`') else {
@@ -1362,7 +1384,9 @@ fn build_window(application: &gtk::Application) {
         let add_key = add_key.clone();
         move |_| {
             let index = backup_keys.borrow().len() + 2;
-            if index > crate::config::MAX_API_KEYS { return; }
+            if index > crate::config::MAX_API_KEYS {
+                return;
+            }
             let (row, entry, remove) = backup_key_row(index);
             backup_rows.append(&row);
             backup_keys.borrow_mut().push(entry.clone());
@@ -1751,6 +1775,15 @@ fn hyprland_clients() -> Result<Vec<serde_json::Value>> {
 
 fn hyprland_window_info(title: &str) -> Result<serde_json::Value> {
     let clients = hyprland_clients()?;
+    hyprland_find_window(&clients, title)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Hyprland has no window matching `{title}`"))
+}
+
+fn hyprland_find_window<'a>(
+    clients: &'a [serde_json::Value],
+    title: &str,
+) -> Option<&'a serde_json::Value> {
     clients
         .iter()
         .find(|window| window.get("title").and_then(|value| value.as_str()) == Some(title))
@@ -1769,8 +1802,34 @@ fn hyprland_window_info(title: &str) -> Result<serde_json::Value> {
                 })
             })
         })
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Hyprland has no window matching `{title}`"))
+}
+
+fn hyprland_set_window_pinned(
+    window: &serde_json::Value,
+    should_be_pinned: bool,
+    uses_lua_dispatch: bool,
+) -> Result<()> {
+    let is_pinned = window
+        .get("pinned")
+        .and_then(|value| value.as_bool())
+        .ok_or_else(|| anyhow::anyhow!("Hyprland did not report the window's pinned state"))?;
+    if is_pinned == should_be_pinned {
+        return Ok(());
+    }
+
+    let address = window
+        .get("address")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Hyprland did not report the window address"))?;
+    let selector = format!("address:{address}");
+    if uses_lua_dispatch {
+        let action = if should_be_pinned { "enable" } else { "disable" };
+        hyprland_lua_dispatch(&format!(
+            "hl.dsp.window.pin({{ action = \"{action}\", window = \"{selector}\" }})"
+        ))
+    } else {
+        hyprland_dispatch("pin", Some(&selector))
+    }
 }
 
 fn hyprland_window_position(title: &str) -> Result<(i32, i32)> {
@@ -1785,27 +1844,19 @@ fn hyprland_position_from_info(
     let at = window
         .get("at")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Hyprland did not report a position for `{description}`")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("Hyprland did not report a position for `{description}`"))?;
     let coordinate = |value: &serde_json::Value| {
         value
             .as_i64()
             .map(|value| value as i32)
             .or_else(|| value.as_f64().map(|value| value.round() as i32))
     };
-    let x = at
-        .first()
-        .and_then(coordinate)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Hyprland returned an invalid x position for `{description}`")
-        })?;
-    let y = at
-        .get(1)
-        .and_then(coordinate)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Hyprland returned an invalid y position for `{description}`")
-        })?;
+    let x = at.first().and_then(coordinate).ok_or_else(|| {
+        anyhow::anyhow!("Hyprland returned an invalid x position for `{description}`")
+    })?;
+    let y = at.get(1).and_then(coordinate).ok_or_else(|| {
+        anyhow::anyhow!("Hyprland returned an invalid y position for `{description}`")
+    })?;
     Ok((x, y))
 }
 
@@ -1824,19 +1875,9 @@ fn animate_overlay_transition(
         window.set_opacity(0.0);
         window.present();
         launcher.set_opacity(1.0);
-        (
-            ICON_SIZE,
-            ICON_SIZE,
-            size.width as i32,
-            size.height as i32,
-        )
+        (ICON_SIZE, ICON_SIZE, size.width as i32, size.height as i32)
     } else {
-        (
-            size.width as i32,
-            size.height as i32,
-            ICON_SIZE,
-            ICON_SIZE,
-        )
+        (size.width as i32, size.height as i32, ICON_SIZE, ICON_SIZE)
     };
     let started = std::time::Instant::now();
     let window = window.clone();
@@ -1901,13 +1942,15 @@ fn place_floating_window_for(title: &str, position: Option<(i32, i32)>) -> Resul
     } else {
         hyprland_dispatch("setfloating", Some(&selector))?;
     }
+    // Pin the visible overlay so Hyprland keeps it above fullscreen windows.
+    hyprland_set_window_pinned(&window, true, uses_lua_dispatch)?;
 
     // Both the assistant and its launcher share this verified Hyprland class.
     // Apply the border override by class so the round launcher stays borderless.
     if uses_lua_dispatch {
-        hyprland_lua_dispatch(&format!(
-            "hl.dsp.window.set_prop({{ prop = \"border_size\", value = \"0\", window = \"class:io.github.patermars.HyprlyScreenTest\" }})"
-        ))?;
+        hyprland_lua_dispatch(
+            "hl.dsp.window.set_prop({ prop = \"border_size\", value = \"0\", window = \"class:io.github.patermars.HyprlyScreenTest\" })",
+        )?;
     } else {
         hyprland_setprop(
             "class:io.github.patermars.HyprlyScreenTest",
@@ -2395,7 +2438,12 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
     // Reload config to ensure we have the latest position values
     let current_position = crate::config::Config::load()
         .ok()
-        .and_then(|c| c.screen.overlay_window.position_x.zip(c.screen.overlay_window.position_y))
+        .and_then(|c| {
+            c.screen
+                .overlay_window
+                .position_x
+                .zip(c.screen.overlay_window.position_y)
+        })
         .or_else(|| saved_size.position_x.zip(saved_size.position_y));
     center_on_launch.set_active(current_position.is_none());
     center_on_launch.set_tooltip_text(Some(
@@ -2791,10 +2839,7 @@ fn selected_dropdown_value(dropdown: &gtk::DropDown, values: &[String]) -> Strin
 
 fn available_audio_sources() -> Vec<(String, String)> {
     let mut choices = vec![("Default system audio output".to_string(), String::new())];
-    let Ok(output) = Command::new(crate::pipewire::WPCTL)
-        .args(crate::pipewire::STATUS_ARGS)
-        .output()
-    else {
+    let Ok(output) = crate::pipewire::query_status() else {
         return choices;
     };
     if !output.status.success() {
@@ -2975,7 +3020,11 @@ fn apply_gui_theme(provider: &gtk::CssProvider, theme: &str) {
         dark_ink = if dark { "#102016" } else { "#ffffff" },
         connect_bg = if theme == "paper" { accent } else { raised },
         connect_ink = if theme == "paper" {
-            if dark { "#102016" } else { "#ffffff" }
+            if dark {
+                "#102016"
+            } else {
+                "#ffffff"
+            }
         } else {
             text
         },
@@ -3258,19 +3307,17 @@ fn start_backend(state: &Rc<std::cell::RefCell<AppState>>) {
         .stdin
         .take()
         .map(|stdin| std::sync::Arc::new(std::sync::Mutex::new(stdin)));
-    let (overlay_child, overlay_stdin) = match spawn_answer_overlay(
-        backend_stdin.clone(),
-        use_overlay,
-    ) {
-        Ok(overlay) => (Some(overlay.0), overlay.1),
-        Err(error) => {
-            let _ = child.kill();
-            state.borrow().status.set_text(&format!(
-                "Could not start the private answer window: {error}"
-            ));
-            return;
-        }
-    };
+    let (overlay_child, overlay_stdin) =
+        match spawn_answer_overlay(backend_stdin.clone(), use_overlay) {
+            Ok(overlay) => (Some(overlay.0), overlay.1),
+            Err(error) => {
+                let _ = child.kill();
+                state.borrow().status.set_text(&format!(
+                    "Could not start the private answer window: {error}"
+                ));
+                return;
+            }
+        };
 
     let event_tx = state.borrow().event_tx.clone();
     if let Some(stdout) = child.stdout.take() {
@@ -3495,9 +3542,7 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
                 state_ref.secure_url.set_uri(&info.secure_url);
                 state_ref.secure_url.set_label(&info.secure_url);
                 state_ref.secure_url.set_sensitive(true);
-                state_ref
-                    .fingerprint
-                    .set_text(&info.fingerprint);
+                state_ref.fingerprint.set_text(&info.fingerprint);
                 *state_ref.qr_code.borrow_mut() = QrCode::new(info.secure_url.as_bytes()).ok();
                 state_ref.qr_area.queue_draw();
             }
@@ -3809,7 +3854,10 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
             .set_text("Enter a Groq API key first.");
         return;
     }
-    state.borrow().status.set_text("Checking all Groq API keys…");
+    state
+        .borrow()
+        .status
+        .set_text("Checking all Groq API keys…");
     let sender = state.borrow().event_tx.clone();
     std::thread::spawn(move || {
         let result = tokio::runtime::Builder::new_current_thread()
@@ -3836,9 +3884,15 @@ fn test_api_key(state: &Rc<std::cell::RefCell<AppState>>) {
                                             .get("data")
                                             .and_then(serde_json::Value::as_array)
                                             .map_or(0, Vec::len);
-                                        results.push(format!("Key {} works ({model_count} models)", index + 1));
+                                        results.push(format!(
+                                            "Key {} works ({model_count} models)",
+                                            index + 1
+                                        ));
                                     }
-                                    Err(error) => results.push(format!("Key {} returned an invalid response: {error}", index + 1)),
+                                    Err(error) => results.push(format!(
+                                        "Key {} returned an invalid response: {error}",
+                                        index + 1
+                                    )),
                                 }
                             }
                             Ok(response) => {
@@ -3880,9 +3934,7 @@ fn check_pipewire(state: &Rc<std::cell::RefCell<AppState>>) {
     let sender = state.borrow().event_tx.clone();
     std::thread::spawn(move || {
         let result = (|| -> Result<String> {
-            let status = Command::new(crate::pipewire::WPCTL)
-                .args(crate::pipewire::STATUS_ARGS)
-                .output()
+            let status = crate::pipewire::query_status()
                 .context("WirePlumber command wpctl was not found")?;
             if !status.status.success() {
                 anyhow::bail!("wpctl could not query the PipeWire session");

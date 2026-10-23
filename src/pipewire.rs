@@ -1,3 +1,5 @@
+use std::process::{Command, Output};
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Sink {
     pub(crate) id: String,
@@ -7,6 +9,10 @@ pub(crate) struct Sink {
 
 pub(crate) const WPCTL: &str = "wpctl";
 pub(crate) const STATUS_ARGS: [&str; 2] = ["status", "-n"];
+
+pub(crate) fn query_status() -> std::io::Result<Output> {
+    Command::new(WPCTL).args(STATUS_ARGS).output()
+}
 
 pub(crate) fn parse_sinks(status: &str) -> Vec<Sink> {
     let mut in_sinks = false;

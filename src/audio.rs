@@ -69,6 +69,43 @@ impl PipelineState {
             },
         }
     }
+
+    fn append_transcription(&mut self, incoming: &str, debounce_after: Duration) -> Option<bool> {
+        let cleaned = transcript::clean(incoming, &self.clean_config);
+        if cleaned.is_empty() {
+            return None;
+        }
+
+        let topic_changed = topic::is_new_topic(&self.transcript, &cleaned);
+        if topic_changed {
+            self.transcript.clear();
+            if let Some(token) = self.pending_ai.take() {
+                token.cancel();
+            }
+        }
+
+        if !append_transcript(&mut self.transcript, &cleaned) {
+            return None;
+        }
+
+        let excess_chars = self
+            .transcript
+            .chars()
+            .count()
+            .saturating_sub(MAX_TRANSCRIPT_CHARS);
+        if excess_chars > 0 {
+            let truncate_at = self
+                .transcript
+                .char_indices()
+                .nth(excess_chars)
+                .map(|(index, _)| index)
+                .unwrap_or(self.transcript.len());
+            self.transcript.drain(..truncate_at);
+        }
+
+        self.debounce_deadline = Some(Instant::now() + debounce_after);
+        Some(topic_changed)
+    }
 }
 
 fn append_transcript(existing: &mut String, incoming: &str) -> bool {
@@ -321,31 +358,14 @@ pub async fn run(
                     }
                 };
 
-                let cleaned_text = transcript::clean(&text, &state.clean_config);
-                if cleaned_text.trim().is_empty() {
-                    continue;
-                }
-                if topic::is_new_topic(&state.transcript, &cleaned_text) {
-                    state.transcript.clear();
-                    if let Some(token) = state.pending_ai.take() {
-                        token.cancel();
+                if let Some(topic_changed) = state
+                    .append_transcription(&text, Duration::from_millis(audio.debounce_ms))
+                {
+                    if topic_changed {
+                        mobile.topic_changed();
                     }
-                    mobile.topic_changed();
+                    mobile.transcript(&state.transcript);
                 }
-
-                if !append_transcript(&mut state.transcript, &cleaned_text) {
-                    continue;
-                }
-                if state.transcript.len() > MAX_TRANSCRIPT_CHARS {
-                    state
-                        .transcript
-                        .drain(..state.transcript.len() - MAX_TRANSCRIPT_CHARS);
-                }
-
-                mobile.transcript(&state.transcript);
-
-                state.debounce_deadline =
-                    Some(Instant::now() + Duration::from_millis(audio.debounce_ms));
                 }
             }
             cmd = cmd_rx.recv() => {
@@ -372,21 +392,15 @@ pub async fn run(
                                         continue;
                                     }
                                 }
-                                let cleaned =
-                                    transcript::clean(result.text.trim(), &state.clean_config);
-                                if !cleaned.trim().is_empty() {
-                                    if topic::is_new_topic(&state.transcript, &cleaned) {
-                                        state.transcript.clear();
-                                        if let Some(token) = state.pending_ai.take() {
-                                            token.cancel();
-                                        }
+                                if let Some(topic_changed) =
+                                    state.append_transcription(&result.text, Duration::ZERO)
+                                {
+                                    if topic_changed {
                                         mobile.topic_changed();
                                     }
-                                    append_transcript(&mut state.transcript, &cleaned);
                                     mobile.transcript(&state.transcript);
-                                    state.debounce_deadline = Some(Instant::now());
                                 } else {
-                                    mobile.status("ready", "No speech found in recent audio");
+                                    mobile.status("ready", "No new speech found in recent audio");
                                 }
                             }
                             Ok(_) => mobile.status("ready", "No speech found in recent audio"),
@@ -720,10 +734,28 @@ async fn record_chunk(
     Ok(Some(encode_wav(&pcm)?))
 }
 
+async fn default_output_source() -> Option<String> {
+    let output = Command::new(crate::pipewire::WPCTL)
+        .args(crate::pipewire::STATUS_ARGS)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    crate::pipewire::default_sink(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{append_transcript, encode_wav, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+    use super::{
+        append_transcript, encode_wav, PipelineState, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE,
+        MAX_TRANSCRIPT_CHARS,
+    };
+    use crate::config::AudioConfig;
     use std::io::Cursor;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn drops_duplicate_and_overlapping_chunks() {
@@ -734,6 +766,45 @@ mod tests {
             "the numbers again tomorrow"
         ));
         assert_eq!(transcript, "We should review the numbers again tomorrow");
+    }
+
+    #[test]
+    fn recent_transcription_uses_the_same_deduplication_and_topic_reset() {
+        let mut state = PipelineState::new(&AudioConfig::default());
+        assert_eq!(
+            state.append_transcription("Write Python code for sorting", Duration::ZERO),
+            Some(false)
+        );
+        let pending_ai = CancellationToken::new();
+        state.pending_ai = Some(pending_ai.clone());
+
+        assert_eq!(
+            state.append_transcription("Now write a SQL query to find duplicates", Duration::ZERO),
+            Some(true)
+        );
+        assert!(pending_ai.is_cancelled());
+        assert_eq!(state.transcript, "Now write a SQL query to find duplicates");
+        assert_eq!(
+            state.append_transcription("write a SQL query to find duplicates", Duration::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn transcript_limit_preserves_utf8_boundaries_and_character_count() {
+        let mut state = PipelineState::new(&AudioConfig::default());
+        let incoming = format!(
+            "{}💬{}",
+            "a".repeat(MAX_TRANSCRIPT_CHARS + 3),
+            "b".repeat(MAX_TRANSCRIPT_CHARS - 3)
+        );
+
+        assert_eq!(
+            state.append_transcription(&incoming, Duration::ZERO),
+            Some(false)
+        );
+        assert_eq!(state.transcript.chars().count(), MAX_TRANSCRIPT_CHARS);
+        assert!(state.transcript.contains('💬'));
     }
 
     #[test]
@@ -757,16 +828,4 @@ mod tests {
             samples
         );
     }
-}
-
-async fn default_output_source() -> Option<String> {
-    let output = Command::new(crate::pipewire::WPCTL)
-        .args(crate::pipewire::STATUS_ARGS)
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    crate::pipewire::default_sink(&String::from_utf8_lossy(&output.stdout))
 }

@@ -19,9 +19,19 @@ Hyprly is a Linux desktop app that captures meeting audio through PipeWire, tran
   <img src="assets/hyprly-suite.png" alt="Hyprly desktop app showing API setup, system checks, and phone pairing" width="100%">
 </p>
 
+<div align="center">
+  <h1>⚠️ Hyprland floating overlay warning ⚠️</h1>
+</div>
+
+Hyprly's floating overlay can stay visible on your desktop while remaining hidden from screen shares with the Hyprland patch enabled. This behavior is confirmed on **Hyprland 0.56.2**, commit `efb50993780079460b0cbed1363e2166a2de1d9f`.
+
+The Arch installer, [`install-arch.sh`](install-arch.sh), can apply [Hyprland PR #16061](https://github.com/hyprwm/Hyprland/commit/eb4edf1cd20ae02cae8c83b819cd8e59100572c). It patches a local Hyprland source checkout; you must build, install, and restart Hyprland separately. Future Hyprland updates may break the behavior or prevent the patch from applying. Rerun `./install-arch.sh` and select the patch option to try applying it again. If that does not work, ask your AI agent to adapt the patch for your Hyprland version using:
+
 ## How it works
 
 ![Hyprly audio and response workflow](assets/workflow.png)
+
+![Hyprly floating overlay visible on the desktop while hidden from the screen share](assets/no_screen_share.gif)
 
 ## Features
 
@@ -78,17 +88,6 @@ To install it as a native Arch package, run this from the project root:
 ```bash
 ./install-arch.sh
 ```
-
-This builds and installs the `hyprly-git` package, including its application launcher and icon. The helper keeps makepkg's build checkout and Git cache under `~/.cache/hyprly/makepkg`, away from the project's own `src/` directory. Prebuilt packages and release archives, when available, are listed on [GitHub Releases](https://github.com/patermars/Hyprly/releases).
-
-## Pair your phone
-
-1. Enter up to three Groq API keys in the desktop app, then select **Save key** and **Connect**. Hyprly tries the next key when a request fails or times out.
-2. On your phone, scan the QR code or open the setup URL shown in the app.
-3. Follow the setup page to install Hyprly’s local CA certificate. Check its fingerprint against the one shown on the desktop.
-4. Open the secure pairing link and enter the six-digit code if prompted.
-
-The desktop app also provides PipeWire and optional PDF/DOCX tool checks. Closing the window keeps Hyprly available from the system tray.
 
 ## Clone history
 

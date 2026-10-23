@@ -1,10 +1,29 @@
-if [[ -n ${startdir:-} && -n ${BUILDDIR:-} && "$BUILDDIR" -ef "$startdir" && -f "$startdir/src/main.rs" ]]; then
-    printf '%s\n' "Error: run ./install-arch.sh from the repository root; makepkg's default srcdir would overlap the project's src/ directory." >&2
-    exit 1
+if [[ -n ${startdir:-} && -f "$startdir/src/main.rs" ]]; then
+    project_dir=$(realpath -e -- "$startdir") || {
+        printf '%s\n' "Error: could not resolve the project directory: $startdir" >&2
+        exit 1
+    }
+    for path_var in BUILDDIR SRCDEST PKGDEST; do
+        case "$path_var" in
+            BUILDDIR) path_value=${BUILDDIR:-$startdir} ;;
+            SRCDEST) path_value=${SRCDEST:-$startdir} ;;
+            PKGDEST) path_value=${PKGDEST:-$startdir} ;;
+        esac
+        resolved_path=$(realpath -m -- "$path_value") || {
+            printf '%s\n' "Error: could not resolve makepkg's $path_var directory: $path_value" >&2
+            exit 1
+        }
+        case "$resolved_path" in
+            "$project_dir"|"$project_dir/"*)
+                printf '%s\n' "Error: makepkg's $path_var directory is inside the project checkout. Run ./install-arch.sh to use the user cache." >&2
+                exit 1
+                ;;
+        esac
+    done
 fi
 
 pkgname=hyprly-git
-pkgver=2.0.2.r0.ge798b79
+pkgver=3.0.0.r0.gd70247e
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')

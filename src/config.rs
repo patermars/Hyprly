@@ -312,51 +312,58 @@ impl Config {
     }
 
     pub fn save_mouse_gesture(gesture: Option<&MouseGesture>) -> anyhow::Result<()> {
-        let path = Self::config_path();
-        let mut document = read_config_document(&path)?;
-        let screen = table_section_mut(&mut document, "screen")?;
-        if let Some(gesture) = gesture {
-            let mut table = toml_edit::Table::new();
-            table["button"] = toml_edit::value(gesture.button as i64);
-            table["clicks"] = toml_edit::value(gesture.clicks as i64);
-            screen["mouse_gesture"] = toml_edit::Item::Table(table);
-        } else {
-            screen.remove("mouse_gesture");
-        }
-
-        Self::write_config(&path, &document.to_string())
+        Self::update_config_document(|document| {
+            let screen = table_section_mut(document, "screen")?;
+            if let Some(gesture) = gesture {
+                let mut table = toml_edit::Table::new();
+                table["button"] = toml_edit::value(gesture.button as i64);
+                table["clicks"] = toml_edit::value(gesture.clicks as i64);
+                screen["mouse_gesture"] = toml_edit::Item::Table(table);
+            } else {
+                screen.remove("mouse_gesture");
+            }
+            Ok(())
+        })
     }
 
     pub fn save_answer_target(target: &str) -> anyhow::Result<()> {
-        let path = Self::config_path();
-        let mut document = read_config_document(&path)?;
-        let screen = table_section_mut(&mut document, "screen")?;
         let value = match target {
             "floating" | "both" => target,
             _ => "webpage",
         };
-        screen["answer_target"] = toml_edit::value(value);
-        Self::write_config(&path, &document.to_string())
+        Self::update_config_document(|document| {
+            let screen = table_section_mut(document, "screen")?;
+            screen["answer_target"] = toml_edit::value(value);
+            Ok(())
+        })
     }
 
     pub fn save_api_keys(api_keys: &[String]) -> anyhow::Result<()> {
+        Self::update_config_document(|document| {
+            let api = table_section_mut(document, "api")?;
+            let keys: Vec<String> = api_keys
+                .iter()
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+                .take(MAX_API_KEYS)
+                .collect();
+            api["api_key"] = toml_edit::value(keys.first().cloned().unwrap_or_default());
+            api["api_keys"] = toml_edit::value(toml_edit::Array::from_iter(keys.iter().cloned()));
+
+            let audio = table_section_mut(document, "audio")?;
+            if !audio.contains_key("enabled") {
+                audio["enabled"] = toml_edit::value(true);
+            }
+            Ok(())
+        })
+    }
+
+    fn update_config_document(
+        update: impl FnOnce(&mut toml_edit::DocumentMut) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let path = Self::config_path();
         let mut document = read_config_document(&path)?;
-        let api = table_section_mut(&mut document, "api")?;
-        let keys: Vec<String> = api_keys
-            .iter()
-            .map(|key| key.trim().to_string())
-            .filter(|key| !key.is_empty())
-            .take(MAX_API_KEYS)
-            .collect();
-        api["api_key"] = toml_edit::value(keys.first().cloned().unwrap_or_default());
-        api["api_keys"] = toml_edit::value(toml_edit::Array::from_iter(keys.iter().cloned()));
-
-        let audio = table_section_mut(&mut document, "audio")?;
-        if !audio.contains_key("enabled") {
-            audio["enabled"] = toml_edit::value(true);
-        }
-
+        update(&mut document)?;
         Self::write_config(&path, &document.to_string())
     }
 

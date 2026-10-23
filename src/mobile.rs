@@ -54,13 +54,45 @@ pub struct MobileHub {
     answer_target: Arc<AtomicU8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MobileCommand {
     Pause,
     Resume,
     ClearTranscript,
     TranscribeRecentAudio,
     UpdateContext(String),
+}
+
+impl MobileCommand {
+    pub(crate) fn from_json(event: &serde_json::Value) -> Option<Self> {
+        let command = event.get("type")?.as_str()?;
+        match command {
+            "pause" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "clear_transcript" => Some(Self::ClearTranscript),
+            "transcribe_recent_audio" => Some(Self::TranscribeRecentAudio),
+            "update_context" => {
+                let context = [
+                    ("Resume", "resume"),
+                    ("Project descriptions", "projects"),
+                    ("Job description", "job_description"),
+                    ("Company", "company"),
+                ]
+                .into_iter()
+                .filter_map(|(label, field)| {
+                    let value = event
+                        .get(field)
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("");
+                    (!value.trim().is_empty()).then(|| format!("### {label}\n{}", value.trim()))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+                Some(Self::UpdateContext(context))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl MobileHub {
@@ -340,7 +372,10 @@ async fn styles() -> Response {
 }
 
 async fn rewind_10_icon() -> Response {
-    static_asset_response(include_bytes!("../assets/icons/rewind-10.svg"), "image/svg+xml")
+    static_asset_response(
+        include_bytes!("../assets/icons/rewind-10.svg"),
+        "image/svg+xml",
+    )
 }
 
 async fn script() -> Response {
@@ -518,39 +553,8 @@ async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
-                            match cmd.get("type").and_then(|v| v.as_str()) {
-                                Some("pause") => {
-                                    hub.paused.store(true, Ordering::Relaxed);
-                                    let _ = hub.commands.send(MobileCommand::Pause);
-                                }
-                                Some("resume") => {
-                                    hub.paused.store(false, Ordering::Relaxed);
-                                    let _ = hub.commands.send(MobileCommand::Resume);
-                                }
-                                Some("clear_transcript") => {
-                                    let _ = hub.commands.send(MobileCommand::ClearTranscript);
-                                }
-                                Some("transcribe_recent_audio") => {
-                                    let _ = hub.commands.send(MobileCommand::TranscribeRecentAudio);
-                                }
-                                Some("update_context") => {
-                                    let resume = cmd.get("resume").and_then(|v| v.as_str()).unwrap_or("");
-                                    let projects = cmd.get("projects").and_then(|v| v.as_str()).unwrap_or("");
-                                    let job = cmd.get("job_description").and_then(|v| v.as_str()).unwrap_or("");
-                                    let company = cmd.get("company").and_then(|v| v.as_str()).unwrap_or("");
-                                    let context = [
-                                        ("Resume", resume),
-                                        ("Project descriptions", projects),
-                                        ("Job description", job),
-                                        ("Company", company),
-                                    ].into_iter()
-                                     .filter(|(_, value)| !value.trim().is_empty())
-                                     .map(|(label, value)| format!("### {label}\n{}", value.trim()))
-                                     .collect::<Vec<_>>()
-                                     .join("\n\n");
-                                    let _ = hub.commands.send(MobileCommand::UpdateContext(context));
-                                }
-                                _ => {}
+                            if let Some(command) = MobileCommand::from_json(&cmd) {
+                                hub.command(command);
                             }
                         }
                     }
@@ -620,4 +624,42 @@ pub fn start(hub: MobileHub) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MobileCommand;
+
+    #[test]
+    fn parses_commands_and_formats_context_once() {
+        for (name, command) in [
+            ("pause", MobileCommand::Pause),
+            ("resume", MobileCommand::Resume),
+            ("clear_transcript", MobileCommand::ClearTranscript),
+            (
+                "transcribe_recent_audio",
+                MobileCommand::TranscribeRecentAudio,
+            ),
+        ] {
+            assert_eq!(
+                MobileCommand::from_json(&serde_json::json!({"type":name})),
+                Some(command)
+            );
+        }
+        assert_eq!(
+            MobileCommand::from_json(&serde_json::json!({
+                "type": "update_context",
+                "resume": "  Resume text ",
+                "projects": " ",
+                "company": " Acme "
+            })),
+            Some(MobileCommand::UpdateContext(
+                "### Resume\nResume text\n\n### Company\nAcme".to_string()
+            ))
+        );
+        assert_eq!(
+            MobileCommand::from_json(&serde_json::json!({"type":"unknown"})),
+            None
+        );
+    }
 }
