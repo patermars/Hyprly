@@ -1,0 +1,273 @@
+diff --git a/src/desktop/state/Fadeout.cpp b/src/desktop/state/Fadeout.cpp
+index 1f5d308..0b14d7d 100644
+--- a/src/desktop/state/Fadeout.cpp
++++ b/src/desktop/state/Fadeout.cpp
+@@ -14,3 +14,7 @@ PHLWORKSPACEREF IFadeout::workspace() const {
+ SFadeoutRenderEffects IFadeout::effects() const {
+     return m_effects;
+ }
++
++bool IFadeout::noScreenShare() const {
++    return m_noScreenShare;
++}
+diff --git a/src/desktop/state/Fadeout.hpp b/src/desktop/state/Fadeout.hpp
+index f213ebd..4c4b42e 100644
+--- a/src/desktop/state/Fadeout.hpp
++++ b/src/desktop/state/Fadeout.hpp
+@@ -58,6 +58,7 @@ namespace Desktop {
+         virtual float                 alpha() const     = 0;
+         virtual bool                  done() const      = 0;
+         virtual SFadeoutRenderEffects effects() const;
++        bool                          noScreenShare() const;
+ 
+       protected:
+         IFadeout() = default;
+@@ -65,5 +66,6 @@ namespace Desktop {
+         SP<Render::IFramebuffer> m_framebuffer;
+         PHLWORKSPACEREF          m_workspace;
+         SFadeoutRenderEffects    m_effects;
++        bool                     m_noScreenShare = false; // source view had the no_screen_share rule
+     };
+ }
+diff --git a/src/desktop/state/LayerFadeout.cpp b/src/desktop/state/LayerFadeout.cpp
+index 283f920..1ec7724 100644
+--- a/src/desktop/state/LayerFadeout.cpp
++++ b/src/desktop/state/LayerFadeout.cpp
+@@ -55,6 +55,8 @@ SP<CLayerFadeout> CLayerFadeout::create(PHLLS layer, SP<Render::IFramebuffer> sn
+     fadeout->m_geometry    = layer->m_geometry;
+     fadeout->m_zIndex      = layerZIndex(layer);
+ 
++    fadeout->m_noScreenShare = layer->m_ruleApplicator->noScreenShare().valueOrDefault();
++
+     static auto PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
+     if (*PDIMAROUND && layer->m_ruleApplicator->dimAround().valueOrDefault())
+         fadeout->m_effects.dimAroundAlpha = *PDIMAROUND;
+diff --git a/src/desktop/state/PopupFadeout.cpp b/src/desktop/state/PopupFadeout.cpp
+index 5db5970..e6b0e92 100644
+--- a/src/desktop/state/PopupFadeout.cpp
++++ b/src/desktop/state/PopupFadeout.cpp
+@@ -1,6 +1,7 @@
+ #include "PopupFadeout.hpp"
+ #include "../view/LayerSurface.hpp"
+ #include "../view/Popup.hpp"
++#include "../view/Window.hpp"
+ #include "../../config/ConfigValue.hpp"
+ #include "../../config/shared/animation/AnimationTree.hpp"
+ #include "../../animation/AnimationManager.hpp"
+@@ -44,6 +45,11 @@ SP<CPopupFadeout> CPopupFadeout::create(SP<CPopup> popup, SP<Render::IFramebuffe
+     fadeout->m_monitor     = MONITOR;
+     fadeout->m_framebuffer = snapshot;
+ 
++    if (const auto WINDOW = popup->windowOwner(); WINDOW)
++        fadeout->m_noScreenShare = WINDOW->m_ruleApplicator->noScreenShare().valueOrDefault();
++    else if (const auto LAYER = popup->layerOwner(); LAYER)
++        fadeout->m_noScreenShare = LAYER->m_ruleApplicator->noScreenShare().valueOrDefault();
++
+     static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
+     if (shouldBlurPopup()) {
+         fadeout->m_effects.textureBlur.enabled               = true;
+diff --git a/src/desktop/state/WindowFadeout.cpp b/src/desktop/state/WindowFadeout.cpp
+index 5fe198a..81a0d5b 100644
+--- a/src/desktop/state/WindowFadeout.cpp
++++ b/src/desktop/state/WindowFadeout.cpp
+@@ -70,6 +70,7 @@ SP<CWindowFadeout> CWindowFadeout::create(PHLWINDOW window, SP<Render::IFramebuf
+     fadeout->m_roundingPower = window->roundingPower();
+     fadeout->m_blur          = shouldBlurWindow(window);
+     fadeout->m_blurXray      = window->m_ruleApplicator->xray().valueOr(false);
++    fadeout->m_noScreenShare = window->m_ruleApplicator->noScreenShare().valueOrDefault();
+ 
+     static auto PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");
+     if (*PDIMAROUND && window->m_ruleApplicator->dimAround().valueOrDefault())
+diff --git a/src/desktop/view/Popup.cpp b/src/desktop/view/Popup.cpp
+index e21ce7b..1d9abd3 100644
+--- a/src/desktop/view/Popup.cpp
++++ b/src/desktop/view/Popup.cpp
+@@ -392,6 +392,10 @@ PHLLS CPopup::layerOwner() const {
+     return m_layerOwner.lock();
+ }
+ 
++PHLWINDOW CPopup::windowOwner() const {
++    return m_windowOwner.lock();
++}
++
+ Vector2D CPopup::coordsRelativeToParent() const {
+     Vector2D offset;
+ 
+diff --git a/src/desktop/view/Popup.hpp b/src/desktop/view/Popup.hpp
+index 747aa9b..10111db 100644
+--- a/src/desktop/view/Popup.hpp
++++ b/src/desktop/view/Popup.hpp
+@@ -49,6 +49,7 @@ namespace Desktop::View {
+ 
+         SP<Desktop::View::CWLSurface>                       getT1Owner() const;
+         PHLLS                                               layerOwner() const;
++        PHLWINDOW                                           windowOwner() const;
+         Vector2D                                            coordsRelativeToParent() const;
+         Vector2D                                            coordsGlobal() const;
+         PHLMONITOR                                          getMonitor() const;
+diff --git a/src/managers/screenshare/ScreenshareFrame.cpp b/src/managers/screenshare/ScreenshareFrame.cpp
+index c74adcb..8be8446 100644
+--- a/src/managers/screenshare/ScreenshareFrame.cpp
++++ b/src/managers/screenshare/ScreenshareFrame.cpp
+@@ -179,7 +179,50 @@ void CScreenshareFrame::renderMonitor() {
+ 
+     const auto PMONITOR = m_session->monitor();
+ 
+-    auto       TEXTURE = g_pHyprRenderer->m_renderData.pMonitor->resources()->getMirrorTexture();
++    g_pHyprRenderer->m_renderData.fbSize = m_bufferSize;
++    g_pHyprRenderer->setProjectionType(Render::RPT_EXPORT);
++    g_pHyprRenderer->m_renderData.transformDamage = false;
++    g_pHyprRenderer->m_renderData.noSimplify      = true;
++    g_pHyprRenderer->setViewport(0, 0, m_bufferSize.x, m_bufferSize.y);
++
++    // the mirror texture has views with the no_screen_share rule baked into it, so if any of them would be
++    // visible, re-render the whole scene instead, skipping them as if they didn't exist
++    const auto ANY_NO_SCREEN_SHARE_VIEWS = [&PMONITOR] {
++        for (auto const& l : Desktop::layerState()->layers()) {
++            if (l->m_monitor != PMONITOR || !l->m_ruleApplicator->noScreenShare().valueOrDefault())
++                continue;
++
++            if UNLIKELY (!l->visible())
++                continue;
++
++            return true;
++        }
++
++        for (auto const& w : Desktop::windowState()->windows()) {
++            if (!w->m_ruleApplicator->noScreenShare().valueOrDefault() || w->isHidden() || !g_pHyprRenderer->shouldRenderWindow(w, PMONITOR))
++                continue;
++
++            return true;
++        }
++
++        return false;
++    };
++
++    // mirrored monitors can't re-render their scene, they fall back to blanking no_screen_share views out
++    if (!PMONITOR->isMirror() && ANY_NO_SCREEN_SHARE_VIEWS())
++        renderMonitorScene(PMONITOR);
++    else
++        renderMonitorMirror(PMONITOR);
++
++    if (m_overlayCursor) {
++        CRegion  fakeDamage = {0, 0, m_bufferSize.x, m_bufferSize.y};
++        Vector2D cursorPos  = g_pInputManager->getMouseCoordsInternal() - PMONITOR->m_position - m_session->m_captureBox.pos() / PMONITOR->m_scale;
++        Pointer::mgr()->renderSoftwareCursorsFor(PMONITOR, Time::steadyNow(), fakeDamage, cursorPos, true);
++    }
++}
++
++void CScreenshareFrame::renderMonitorMirror(PHLMONITOR PMONITOR) {
++    auto TEXTURE = g_pHyprRenderer->m_renderData.pMonitor->resources()->getMirrorTexture();
+     if (!TEXTURE) {
+         LOGM(Log::ERR, "Invalid source texture");
+         return;
+@@ -217,6 +260,10 @@ void CScreenshareFrame::renderMonitor() {
+         {0, 0, PMONITOR->m_pixelSize.x, PMONITOR->m_pixelSize.y});
+     g_pHyprRenderer->m_renderData.renderModif.enabled = OLD;
+ 
++    // re-rendering the scene isn't possible for mirrored monitors, blank no_screen_share views out instead
++    if (!PMONITOR->isMirror())
++        return;
++
+     // render black boxes for noscreenshare
+     auto hidePopups = [&](Vector2D popupBaseOffset) {
+         return [&, popupBaseOffset](WP<Desktop::View::CPopup> popup, void*) {
+@@ -306,11 +353,34 @@ void CScreenshareFrame::renderMonitor() {
+         w->m_popupHead->breadthfirst(hidePopups(popupBaseOffset), nullptr);
+     }
+ 
+-    if (m_overlayCursor) {
+-        CRegion  fakeDamage = {0, 0, INT16_MAX, INT16_MAX};
+-        Vector2D cursorPos  = g_pInputManager->getMouseCoordsInternal() - PMONITOR->m_position - m_session->m_captureBox.pos() / PMONITOR->m_scale;
+-        Pointer::mgr()->renderSoftwareCursorsFor(PMONITOR, Time::steadyNow(), fakeDamage, cursorPos, true);
++}
++
++void CScreenshareFrame::renderMonitorScene(PHLMONITOR PMONITOR) {
++    const auto NOW       = Time::steadyNow();
++    const CBox RENDERBOX = {{}, PMONITOR->m_pixelSize};
++
++    // for region captures, shift the scene so that the capture box starts at (0, 0)
++    const bool NEEDS_TRANSLATE = m_session->m_captureBox.pos() != Vector2D();
++    if (NEEDS_TRANSLATE) {
++        Render::SRenderModifData modifs;
++        modifs.modifs.emplace_back(Render::SRenderModifData::RMOD_TYPE_TRANSLATE, -m_session->m_captureBox.pos());
++        g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{modifs}));
+     }
++
++    g_pHyprRenderer->startRenderPass();
++
++    g_pHyprRenderer->m_skipNoScreenShare     = true;
++    g_pHyprRenderer->m_bBlockSurfaceFeedback = true; // the monitor render already sends feedback, avoid spamming surfaces
++
++    g_pHyprRenderer->renderWorkspace(PMONITOR, PMONITOR->m_activeWorkspace, NOW, RENDERBOX);
++    g_pHyprRenderer->renderLockscreen(PMONITOR, NOW, RENDERBOX);
++    g_pHyprRenderer->renderIME(PMONITOR, NOW, RENDERBOX);
++
++    g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
++    g_pHyprRenderer->m_skipNoScreenShare     = false;
++
++    if (NEEDS_TRANSLATE)
++        g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{Render::SRenderModifData{}}));
+ }
+ 
+ void CScreenshareFrame::renderWindow() {
+diff --git a/src/managers/screenshare/ScreenshareManager.hpp b/src/managers/screenshare/ScreenshareManager.hpp
+index d115d21..fc90974 100644
+--- a/src/managers/screenshare/ScreenshareManager.hpp
++++ b/src/managers/screenshare/ScreenshareManager.hpp
+@@ -185,7 +185,8 @@ namespace Screenshare {
+ 
+         void render();
+         void renderMonitor();
+-        void renderMonitorRegion();
++        void renderMonitorMirror(PHLMONITOR monitor);
++        void renderMonitorScene(PHLMONITOR monitor);
+         void renderWindow();
+ 
+         void storeTempFB();
+diff --git a/src/render/Renderer.cpp b/src/render/Renderer.cpp
+index 249f084..a8a44f2 100644
+--- a/src/render/Renderer.cpp
++++ b/src/render/Renderer.cpp
+@@ -556,6 +556,9 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
+     if (!pWindow->m_isMapped)
+         return;
+ 
++    if (m_skipNoScreenShare && pWindow->m_ruleApplicator->noScreenShare().valueOrDefault())
++        return;
++
+     TRACY_GPU_ZONE("RenderWindow");
+ 
+     const auto  PWORKSPACE = pWindow->m_workspace;
+@@ -939,6 +942,9 @@ void IHyprRenderer::renderLayer(PHLLS pLayer, PHLMONITOR pMonitor, const Time::s
+     if (!pLayer->visible())
+         return;
+ 
++    if (m_skipNoScreenShare && pLayer->m_ruleApplicator->noScreenShare().valueOrDefault())
++        return;
++
+     // skip rendering based on abovelock rule and make sure to not render abovelock layers twice
+     if ((pLayer->m_ruleApplicator->aboveLock().valueOrDefault() && !lockscreen && g_pSessionLockManager->isSessionLocked()) ||
+         (lockscreen && !pLayer->m_ruleApplicator->aboveLock().valueOrDefault()))
+@@ -3237,6 +3243,9 @@ void IHyprRenderer::renderFadeouts(PHLMONITOR monitor, Desktop::eFadeoutPlane pl
+         if (fadeout->workspace() && fadeout->workspace() != workspace)
+             continue;
+ 
++        if (m_skipNoScreenShare && fadeout->noScreenShare())
++            continue;
++
+         fadeouts.emplace_back(fadeout);
+     }
+ 
+diff --git a/src/render/Renderer.hpp b/src/render/Renderer.hpp
+index b4f5ab8..064ef01 100644
+--- a/src/render/Renderer.hpp
++++ b/src/render/Renderer.hpp
+@@ -108,6 +108,7 @@ namespace Render {
+         NColorManagement::PImageDescription workBufferImageDescription();
+         bool                                m_bBlockSurfaceFeedback = false;
+         bool                                m_bRenderingSnapshot    = false;
++        bool                                m_skipNoScreenShare     = false; // skip views with the no_screen_share rule, as if they didn't exist
+         PHLMONITORREF                       m_mostHzMonitor;
+         bool                                m_directScanoutBlocked = false;
+ 

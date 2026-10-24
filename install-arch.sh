@@ -2,19 +2,21 @@
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-cache_root="${XDG_CACHE_HOME:-${HOME:?HOME must be set}/.cache}/hyprly/makepkg"
+user_cache_root="${XDG_CACHE_HOME:-${HOME:?HOME must be set}/.cache}/hyprly"
+cache_root="$user_cache_root/makepkg"
+hyprland_cache_root="$user_cache_root/hyprland-makepkg"
 
-PR_COMMIT="eb4edf1cd20ae02cae8c83b819cd8e59100572c2"
-PR_PATCH_URL="https://github.com/hyprwm/Hyprland/commit/${PR_COMMIT}.patch"
-BACKUP_BASE="${XDG_STATE_HOME:-${HOME:?HOME must be set}/.local/state}/hyprland-pr16061/backups"
-PATCH_TMP_DIR=''
+HYPRLAND_PATCH_VERSION='0.56.2'
+HYPRLAND_ARCH_PKGREL='4'
+HYPRLAND_PATCH_MARKER='/usr/share/hyprland/hyprland-pr16061.patch.sha256'
+HYPRLAND_RECIPE_TMP=''
 
-cleanup_patch_tmp() {
-    if [[ -n "$PATCH_TMP_DIR" ]]; then
-        rm -rf -- "$PATCH_TMP_DIR"
+cleanup_temporary_recipe() {
+    if [[ -n "$HYPRLAND_RECIPE_TMP" ]]; then
+        rm -rf -- "$HYPRLAND_RECIPE_TMP"
     fi
 }
-trap cleanup_patch_tmp EXIT
+trap cleanup_temporary_recipe EXIT
 
 print_banner() {
     cat <<'EOF'
@@ -44,229 +46,16 @@ ask_yes_no() {
     done
 }
 
-read_source_path() {
-    local source_path
-    printf 'Path to the matching Hyprland source checkout: ' >&2
-    IFS= read -r source_path || die 'could not read the Hyprland source path'
-    [[ -n "$source_path" ]] || die 'a Hyprland source path is required when the patch is selected'
-    case "$source_path" in
-        '~') source_path="$HOME" ;;
-        '~/'*) source_path="$HOME/${source_path:2}" ;;
-        '~'*) die 'use an absolute path or a ~/ path for the Hyprland source checkout' ;;
-    esac
-    printf '%s\n' "$source_path"
-}
-
-patch_hyprland() {
-    local source_dir installed_line installed_version repo_info repo_version
-    local pkgver upstream_version expected_tag source_tag comparison
-    local patch_file stamp backup_dir backup_root relative_path resolved_target command_name
-    local original_head previous_patch_backup previous_patch_removed=0
-    local apply_failed=0 restore_failed=0
-    local -a patch_files=()
-
-    restore_previous_patch() {
-        local rel current_head
-
-        (( previous_patch_removed )) || return 0
-        current_head="$(git -C "$source_dir" rev-parse HEAD)" || return 1
-        if [[ "$current_head" != "$original_head" ]]; then
-            git -C "$source_dir" checkout --detach "$original_head" || return 1
-        fi
-        if ! git -C "$source_dir" apply "$patch_file"; then
-            for rel in "${patch_files[@]}"; do
-                cp -p -- "$previous_patch_backup/$rel" "$source_dir/$rel" || return 1
-            done
-        fi
-        previous_patch_removed=0
-    }
-
-    fail_after_release_switch() {
-        local message="$*"
-
-        if (( previous_patch_removed )); then
-            restore_previous_patch || die "$message; could not restore the previous patched checkout (backup: $previous_patch_backup)"
-        fi
-        die "$message"
-    }
-
-    command -v realpath >/dev/null 2>&1 || die 'realpath is required'
-    source_dir="$(realpath -e -- "$1")" || die "Hyprland source directory does not exist: $1"
-    [[ -d "$source_dir/.git" || -f "$source_dir/.git" ]] || die "not a Git checkout: $source_dir"
-    [[ "$BACKUP_BASE" == /* ]] || die 'XDG_STATE_HOME must be an absolute path'
-    backup_root="$(realpath -m -- "$BACKUP_BASE")" || die 'could not resolve the Hyprland backup directory'
-    case "$backup_root" in
-        "$source_dir"|"$source_dir/"*) die 'the Hyprland backup directory must be outside the source checkout' ;;
-    esac
-
-    for command_name in pacman vercmp git curl awk; do
-        command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
-    done
-
-    installed_line="$(pacman -Q hyprland 2>/dev/null)" || die 'Hyprland is not installed according to pacman'
-    installed_version="${installed_line##* }"
-    repo_info="$(pacman -Si hyprland 2>/dev/null)" || die 'Hyprland is not available in the currently configured/synced repositories'
-    repo_version="$(awk '$1 == "Version" && $2 == ":" { print $3; exit }' <<<"$repo_info")"
-    [[ -n "$repo_version" ]] || die 'could not read the repository Hyprland version'
-
-    printf 'Installed Hyprland: %s\n' "$installed_version"
-    printf 'Repository candidate: %s\n' "$repo_version"
-    comparison="$(vercmp "$installed_version" "$repo_version")" || die 'could not compare installed and repository Hyprland versions'
-    if (( comparison < 0 )); then
-        die "Hyprland is behind the repository candidate. Run 'sudo pacman -Syu', reboot into the updated Hyprland, then rerun this installer."
-    fi
-
-    pkgver="${installed_version#*:}"
-    upstream_version="${pkgver%-*}"
-    expected_tag="v${upstream_version}"
-    PATCH_TMP_DIR="$(mktemp -d)"
-    patch_file="$PATCH_TMP_DIR/pr-16061.patch"
-    curl --fail --location --silent --show-error "$PR_PATCH_URL" --output "$patch_file" || die 'could not download the pinned PR #16061 patch'
-    [[ -s "$patch_file" ]] || die 'downloaded PR #16061 patch is empty'
-
-    while IFS= read -r relative_path; do
-        [[ -n "$relative_path" ]] && patch_files+=("$relative_path")
-    done < <(git -C "$source_dir" apply --numstat "$patch_file" | awk -F '\t' 'NF == 3 { print $3 }')
-    ((${#patch_files[@]} > 0)) || die 'could not determine the files changed by PR #16061'
-
-    original_head="$(git -C "$source_dir" rev-parse HEAD)" || die 'could not read the Hyprland source checkout revision'
-    source_tag="$(git -C "$source_dir" describe --tags --exact-match HEAD 2>/dev/null || true)"
-
-    if [[ "$source_tag" == "$expected_tag" ]] && git -C "$source_dir" apply --reverse --check "$patch_file"; then
-        printf 'PR #16061 is already applied to %s; no source files changed.\n' "$source_dir"
-        return 0
-    fi
-
-    if [[ "$source_tag" != "$expected_tag" ]]; then
-        if [[ -n $(git -C "$source_dir" status --porcelain --untracked-files=normal) ]]; then
-            if git -C "$source_dir" apply --reverse --check "$patch_file"; then
-                mkdir -p -- "$backup_root" || die 'could not create the Hyprland backup directory'
-                stamp="$(date +%Y%m%d-%H%M%S)"
-                previous_patch_backup="$(mktemp -d "$backup_root/${stamp}.pre-update.XXXXXX")" || die 'could not create a backup of the earlier patched source'
-                for relative_path in "${patch_files[@]}"; do
-                    case "$relative_path" in
-                        /*|../*|*/../*|*/..|.) die "unsafe path in downloaded patch: $relative_path" ;;
-                    esac
-                    resolved_target="$(realpath -e -- "$source_dir/$relative_path")" || die "patch target does not exist in the old checkout: $relative_path"
-                    case "$resolved_target" in
-                        "$source_dir"/*) ;;
-                        *) die "patch target resolves outside the source checkout: $relative_path" ;;
-                    esac
-                    [[ -f "$resolved_target" && ! -L "$source_dir/$relative_path" ]] || die "patch target is not a regular source file: $relative_path"
-                    mkdir -p -- "$previous_patch_backup/$(dirname -- "$relative_path")"
-                    cp -p -- "$source_dir/$relative_path" "$previous_patch_backup/$relative_path"
-                done
-
-                if ! git -C "$source_dir" apply --reverse "$patch_file"; then
-                    for relative_path in "${patch_files[@]}"; do
-                        cp -p -- "$previous_patch_backup/$relative_path" "$source_dir/$relative_path" || restore_failed=1
-                    done
-                    (( restore_failed == 0 )) || die "could not safely remove the earlier PR #16061 patch; backup: $previous_patch_backup"
-                    die 'could not safely remove the earlier PR #16061 patch; the previous source was restored'
-                fi
-                if [[ -n $(git -C "$source_dir" status --porcelain --untracked-files=normal) ]]; then
-                    if ! git -C "$source_dir" apply "$patch_file"; then
-                        for relative_path in "${patch_files[@]}"; do
-                            cp -p -- "$previous_patch_backup/$relative_path" "$source_dir/$relative_path" || restore_failed=1
-                        done
-                        (( restore_failed == 0 )) || die 'other local changes remain, and restoring the earlier patch was incomplete'
-                    fi
-                    die 'source checkout has changes beyond the earlier PR #16061 patch; those changes were preserved'
-                fi
-                previous_patch_removed=1
-            else
-                die 'source checkout has local changes or untracked files; commit or move them before updating it'
-            fi
-        fi
-
-        printf 'Updating the clean Hyprland source checkout to installed release %s.\n' "$expected_tag"
-        if ! git -C "$source_dir" fetch --no-tags https://github.com/hyprwm/Hyprland.git "refs/tags/$expected_tag:refs/tags/$expected_tag"; then
-            restore_previous_patch || die 'could not fetch the matching release, and the previous source patch could not be restored'
-            die "could not fetch Hyprland release $expected_tag"
-        fi
-        if ! git -C "$source_dir" checkout --detach "$expected_tag"; then
-            restore_previous_patch || die 'could not switch releases, and the previous source patch could not be restored'
-            die "could not switch the source checkout to Hyprland release $expected_tag"
-        fi
-        source_tag="$(git -C "$source_dir" describe --tags --exact-match HEAD 2>/dev/null || true)"
-        if [[ "$source_tag" != "$expected_tag" ]]; then
-            fail_after_release_switch "source checkout did not resolve to the expected release $expected_tag"
-        fi
-    fi
-
-    if [[ -n $(git -C "$source_dir" status --porcelain --untracked-files=normal) ]]; then
-        fail_after_release_switch 'source checkout has local changes or untracked files; commit or move them before patching'
-    fi
-
-    if git -C "$source_dir" apply --reverse --check "$patch_file"; then
-        printf 'PR #16061 is already applied to %s; no source files changed.\n' "$source_dir"
-        return 0
-    fi
-
-    for relative_path in "${patch_files[@]}"; do
-        case "$relative_path" in
-            /*|../*|*/../*|*/..|.)
-                die "unsafe path in downloaded patch: $relative_path"
-                ;;
-        esac
-        resolved_target="$(realpath -e -- "$source_dir/$relative_path")" || fail_after_release_switch "patch target does not exist in $expected_tag: $relative_path"
-        case "$resolved_target" in
-            "$source_dir"/*) ;;
-            *) fail_after_release_switch "patch target resolves outside the source checkout: $relative_path" ;;
-        esac
-        [[ -f "$resolved_target" && ! -L "$source_dir/$relative_path" ]] || fail_after_release_switch "patch target is not a regular source file in $expected_tag: $relative_path"
-    done
-
-    stamp="$(date +%Y%m%d-%H%M%S)"
-    mkdir -p -- "$backup_root" || fail_after_release_switch 'could not create the Hyprland backup directory'
-    backup_dir="$(mktemp -d "$backup_root/${stamp}.XXXXXX")" || fail_after_release_switch 'could not create a backup of the current Hyprland source'
-    for relative_path in "${patch_files[@]}"; do
-        mkdir -p -- "$backup_dir/$(dirname -- "$relative_path")" || fail_after_release_switch "could not prepare the backup for $relative_path"
-        cp -p -- "$source_dir/$relative_path" "$backup_dir/$relative_path" || fail_after_release_switch "could not back up $relative_path"
-    done
-
-    if git -C "$source_dir" apply --check "$patch_file"; then
-        if git -C "$source_dir" apply "$patch_file"; then
-            printf '\nApplied PR #16061 to %s.\n' "$expected_tag"
-        else
-            apply_failed=1
-        fi
-    else
-        printf 'Patch context changed; trying a three-way apply against %s.\n' "$expected_tag"
-        git -C "$source_dir" fetch --no-tags https://github.com/hyprwm/Hyprland.git refs/pull/16061/head >/dev/null 2>&1 || true
-        if git -C "$source_dir" apply --3way "$patch_file"; then
-            if git -C "$source_dir" reset --mixed HEAD; then
-                printf '\nReapplied PR #16061 to %s with a three-way merge.\n' "$expected_tag"
-            else
-                apply_failed=1
-                restore_failed=1
-            fi
-        else
-            git -C "$source_dir" reset --mixed HEAD || restore_failed=1
-            apply_failed=1
-        fi
-    fi
-
-    if (( apply_failed )); then
-        git -C "$source_dir" reset --mixed HEAD || restore_failed=1
-        for relative_path in "${patch_files[@]}"; do
-            cp -p -- "$backup_dir/$relative_path" "$source_dir/$relative_path" || restore_failed=1
-        done
-        restore_previous_patch || restore_failed=1
-        (( restore_failed == 0 )) || die "patch application failed and automatic restore was incomplete; backups are at $backup_dir"
-        die "PR #16061 no longer applies cleanly to $expected_tag; original target files were restored from $backup_dir. The patch needs review for this Hyprland release."
-    fi
-
-    printf 'Backups of the %d modified source files: %s\n' "${#patch_files[@]}" "$backup_dir"
-    if [[ -n "$previous_patch_backup" ]]; then
-        printf 'Backup of the earlier patched checkout: %s\n' "$previous_patch_backup"
-    fi
-    printf 'Review the changes with: git -C %q diff\n' "$source_dir"
-    printf 'This edited only the source checkout. Build, install, and restart Hyprland separately to activate it.\n'
-}
-
-install_hyprly() {
+run_makepkg() {
+    local pkgbuild_dir="$1" selected_cache_root="$2"
     local project_dir resolved_cache_root build_dir source_cache package_cache arg
+    local install_after_build=1
+    shift 2
+
+    if [[ "${1:-}" == '--build-only' ]]; then
+        install_after_build=0
+        shift
+    fi
 
     command -v makepkg >/dev/null 2>&1 || die 'makepkg is required; install base-devel first'
     command -v realpath >/dev/null 2>&1 || die 'realpath is required'
@@ -277,9 +66,9 @@ install_hyprly() {
                 ;;
         esac
     done
-    [[ "$cache_root" == /* ]] || die 'XDG_CACHE_HOME must be an absolute path'
+    [[ "$selected_cache_root" == /* ]] || die 'XDG_CACHE_HOME must be an absolute path'
     project_dir="$(realpath -e -- "$repo_root")"
-    resolved_cache_root="$(realpath -m -- "$cache_root")"
+    resolved_cache_root="$(realpath -m -- "$selected_cache_root")"
     [[ "$resolved_cache_root" != / ]] || die 'the makepkg cache directory cannot be the filesystem root'
     case "$resolved_cache_root" in
         "$project_dir"|"$project_dir/"*)
@@ -296,8 +85,169 @@ install_hyprly() {
     printf 'Downloaded sources: %s\n' "$source_cache"
     printf 'Built packages: %s\n\n' "$package_cache"
 
-    cd -- "$repo_root"
-    BUILDDIR="$build_dir" SRCDEST="$source_cache" PKGDEST="$package_cache" makepkg -si "$@"
+    cd -- "$pkgbuild_dir"
+    if (( install_after_build )); then
+        BUILDDIR="$build_dir" SRCDEST="$source_cache" PKGDEST="$package_cache" makepkg -si "$@"
+    else
+        BUILDDIR="$build_dir" SRCDEST="$source_cache" PKGDEST="$package_cache" makepkg -s "$@"
+    fi
+}
+
+install_patched_hyprland() {
+    local installed_line installed_version repo_info repo_version installed_pkgver repo_pkgver
+    local upstream_version installed_pkgrel split_package installed_split_line installed_split_version installed_split_pkgver installed_split_pkgrel
+    local patched_pkgrel patch_file patch_hash installed_patch_hash='' installed_debug_line=''
+    local recipe_dir recipe_cache_root project_dir command_name architecture package_name package_path package_version package_record
+    local marker_contents actual_version
+    local -a install_packages=() install_package_names=(hyprland hyprpm)
+
+    for command_name in awk bsdtar grep install mktemp pacman realpath sed sha256sum sudo uname vercmp; do
+        command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
+    done
+
+    installed_line="$(pacman -Q hyprland 2>/dev/null)" || die 'Hyprland is not installed according to pacman'
+    installed_version="${installed_line##* }"
+    repo_info="$(pacman -Si hyprland 2>/dev/null)" || die 'Hyprland is not available in the currently configured/synced repositories'
+    repo_version="$(awk '$1 == "Version" && $2 == ":" { print $3; exit }' <<<"$repo_info")"
+    [[ -n "$repo_version" ]] || die 'could not read the repository Hyprland version'
+
+    printf 'Installed Hyprland: %s\n' "$installed_version"
+    printf 'Repository candidate: %s\n' "$repo_version"
+    if (( $(vercmp "$installed_version" "$repo_version") < 0 )); then
+        die "Hyprland is behind the repository candidate. Run 'sudo pacman -Syu', reboot into the updated Hyprland, then rerun this installer."
+    fi
+
+    installed_pkgver="${installed_version#*:}"
+    repo_pkgver="${repo_version#*:}"
+    upstream_version="${installed_pkgver%-*}"
+    [[ "$upstream_version" == "$HYPRLAND_PATCH_VERSION" ]] || \
+        die "the included PR #16061 port supports Hyprland $HYPRLAND_PATCH_VERSION; installed version is $upstream_version"
+    [[ "$repo_pkgver" == "$HYPRLAND_PATCH_VERSION-$HYPRLAND_ARCH_PKGREL" ]] || \
+        die "the bundled Arch package recipe targets Hyprland $HYPRLAND_PATCH_VERSION-$HYPRLAND_ARCH_PKGREL; repository candidate is $repo_pkgver"
+
+    patch_file="$repo_root/packaging/arch/hyprland-pr16061/hyprland-pr16061-v${upstream_version}.patch"
+    [[ -s "$patch_file" ]] || die "the PR #16061 patch for Hyprland $upstream_version is missing: $patch_file"
+    patch_hash="$(sha256sum -- "$patch_file" | awk '{ print $1 }')" || die 'could not calculate the Hyprland patch checksum'
+
+    if [[ -f "$HYPRLAND_PATCH_MARKER" && ! -L "$HYPRLAND_PATCH_MARKER" ]]; then
+        IFS= read -r installed_patch_hash < "$HYPRLAND_PATCH_MARKER" || true
+        if [[ "$installed_patch_hash" == "$patch_hash" ]]; then
+            printf 'The patched Hyprland package is already installed.\n'
+            printf 'Log out and start a new Hyprland session to activate it if you have not already restarted.\n'
+            return 0
+        fi
+    fi
+
+    for command_name in grep install mktemp realpath sed; do
+        command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
+    done
+
+    installed_pkgrel="${installed_pkgver##*-}"
+    for split_package in hyprpm hyprland-debug; do
+        installed_split_line="$(pacman -Q "$split_package" 2>/dev/null || true)"
+        [[ -n "$installed_split_line" ]] || continue
+
+        installed_split_version="${installed_split_line##* }"
+        installed_split_pkgver="${installed_split_version#*:}"
+        [[ "${installed_split_pkgver%-*}" == "$upstream_version" ]] || \
+            die "installed $split_package version $installed_split_version does not match Hyprland $upstream_version; update the packages together before applying the patch"
+        installed_split_pkgrel="${installed_split_pkgver##*-}"
+        if (( $(vercmp "$installed_pkgrel" "$installed_split_pkgrel") < 0 )); then
+            installed_pkgrel="$installed_split_pkgrel"
+        fi
+    done
+    if [[ "$installed_pkgrel" == *.* ]]; then
+        local installed_pkgrel_base installed_pkgrel_subrelease
+        installed_pkgrel_base="${installed_pkgrel%%.*}"
+        installed_pkgrel_subrelease="${installed_pkgrel#*.}"
+        [[ "$installed_pkgrel_base" =~ ^[0-9]+$ && "$installed_pkgrel_subrelease" =~ ^[0-9]+$ ]] || \
+            die "cannot derive a safe patched package release from $installed_version"
+        patched_pkgrel="${installed_pkgrel_base}.$((10#$installed_pkgrel_subrelease + 1))"
+    else
+        [[ "$installed_pkgrel" =~ ^[0-9]+$ ]] || die "cannot derive a safe patched package release from $installed_version"
+        patched_pkgrel="${installed_pkgrel}.1"
+    fi
+
+    [[ "$hyprland_cache_root" == /* ]] || die 'XDG_CACHE_HOME must be an absolute path'
+    project_dir="$(realpath -e -- "$repo_root")"
+    recipe_cache_root="$(realpath -m -- "$hyprland_cache_root")" || die 'could not resolve the Hyprland package cache path'
+    case "$recipe_cache_root" in
+        "$project_dir"|"$project_dir/"*)
+            die "the Hyprland package cache is inside the project checkout: $recipe_cache_root; set XDG_CACHE_HOME to a location outside the repository"
+            ;;
+    esac
+    mkdir -p -- "$recipe_cache_root" || die "could not create the Hyprland package cache: $recipe_cache_root"
+    [[ ! -L "$recipe_cache_root" ]] || die "Hyprland package cache path is a symlink: $recipe_cache_root"
+
+    HYPRLAND_RECIPE_TMP="$(mktemp -d "$recipe_cache_root/.recipe.XXXXXX")" || die 'could not create a temporary Hyprland package recipe'
+    recipe_dir="$HYPRLAND_RECIPE_TMP"
+    install -m 0644 -- "$repo_root/packaging/arch/hyprland-pr16061/PKGBUILD" "$recipe_dir/PKGBUILD" || \
+        die 'could not prepare the Hyprland package recipe'
+    install -m 0644 -- "$patch_file" "$recipe_dir/hyprland-pr16061-v${upstream_version}.patch" || \
+        die 'could not prepare the Hyprland source patch'
+
+    [[ "$(grep -Fxc -- "pkgver=$upstream_version" "$recipe_dir/PKGBUILD")" == 1 ]] || \
+        die 'the bundled Hyprland package recipe does not match the supported release'
+    [[ "$(grep -Fxc -- "pkgrel=$HYPRLAND_ARCH_PKGREL.1" "$recipe_dir/PKGBUILD")" == 1 ]] || \
+        die 'the bundled Hyprland package recipe has an unexpected base release'
+    [[ "$(grep -Fxc -- "            'PATCH_SHA256_PLACEHOLDER')" "$recipe_dir/PKGBUILD")" == 1 ]] || \
+        die 'the bundled Hyprland recipe is missing its patch checksum placeholder'
+    sed -i "s/^pkgrel=$HYPRLAND_ARCH_PKGREL\\.1$/pkgrel=$patched_pkgrel/" "$recipe_dir/PKGBUILD" || \
+        die 'could not set the patched Hyprland package release'
+    sed -i "s/PATCH_SHA256_PLACEHOLDER/$patch_hash/" "$recipe_dir/PKGBUILD" || \
+        die 'could not set the Hyprland patch checksum'
+
+    printf 'Building patched Hyprland %s-%s as Arch packages.\n' "$upstream_version" "$patched_pkgrel"
+    run_makepkg "$recipe_dir" "$recipe_cache_root" --build-only --cleanbuild --noconfirm
+
+    architecture="$(uname -m)"
+    package_version="$upstream_version-$patched_pkgrel"
+    for package_name in hyprland hyprpm; do
+        package_path="$recipe_cache_root/packages/$package_name-$package_version-$architecture.pkg.tar.zst"
+        [[ -s "$package_path" ]] || die "makepkg did not create the expected package: $package_path"
+        package_record="$(pacman -Qp "$package_path")" || die "could not inspect the built package: $package_path"
+        [[ "$package_record" == "$package_name $package_version" ]] || \
+            die "unexpected package metadata in $package_path: $package_record"
+        install_packages+=("$package_path")
+    done
+
+    installed_debug_line="$(pacman -Q hyprland-debug 2>/dev/null || true)"
+    if [[ -n "$installed_debug_line" ]]; then
+        package_name='hyprland-debug'
+        package_path="$recipe_cache_root/packages/$package_name-$package_version-$architecture.pkg.tar.zst"
+        [[ -s "$package_path" ]] || die "makepkg did not create the installed debug package: $package_path"
+        package_record="$(pacman -Qp "$package_path")" || die "could not inspect the built package: $package_path"
+        [[ "$package_record" == "$package_name $package_version" ]] || \
+            die "unexpected package metadata in $package_path: $package_record"
+        install_packages+=("$package_path")
+        install_package_names+=("$package_name")
+    fi
+
+    marker_contents="$(bsdtar -xOf "${install_packages[0]}" usr/share/hyprland/hyprland-pr16061.patch.sha256)" || \
+        die 'the built Hyprland package is missing its PR #16061 patch marker'
+    [[ "$marker_contents" == "$patch_hash" ]] || die 'the built Hyprland package marker does not match the patch file'
+
+    printf '\nInstalling these package files with pacman:\n'
+    printf '  %s\n' "${install_packages[@]}"
+    sudo pacman -U "${install_packages[@]}"
+
+    for package_name in "${install_package_names[@]}"; do
+        installed_line="$(pacman -Q "$package_name" 2>/dev/null)" || die "$package_name was not installed"
+        actual_version="${installed_line##* }"
+        actual_version="${actual_version#*:}"
+        [[ "$actual_version" == "$package_version" ]] || \
+            die "$package_name installed as $actual_version instead of $package_version"
+    done
+
+    IFS= read -r installed_patch_hash < "$HYPRLAND_PATCH_MARKER" || true
+    [[ "$installed_patch_hash" == "$patch_hash" ]] || die 'the installed Hyprland patch marker does not match the source patch'
+
+    printf '\nInstalled patched Hyprland %s.\n' "$package_version"
+    printf 'Log out and start a new Hyprland session to activate the screen-sharing change.\n'
+}
+
+install_hyprly() {
+    run_makepkg "$repo_root" "$cache_root" "$@"
 }
 
 add_screen_test_window_rules() {
@@ -330,7 +280,7 @@ add_screen_test_window_rules() {
             marker='-- >>> Hyprly Screen Test window rules >>>'
         fi
 
-        if [[ -f "$config_file" ]] && grep -Fq "$marker" "$config_file"; then
+        if [[ -f "$config_file" ]] && grep -Fq -- "$marker" "$config_file"; then
             printf 'Hyprly Screen Test rules already exist in %s; skipped.\n' "$config_file"
             continue
         fi
@@ -361,69 +311,44 @@ EOF
         printf 'Added Hyprly Screen Test rules to %s.\n' "$config_file"
     done
 
-    printf 'Reload Hyprland for the rules to take effect.\n'
+    printf 'Reload the active Hyprland config; a new session is required if you just installed the patched package.\n'
 }
 
 main() {
-    local patch_requested=0 install_requested=0 window_rules_requested=0
-    local hyprland_source=''
-
     [[ -t 0 ]] || die 'this installer needs an interactive terminal for its confirmations'
     print_banner
     (( EUID != 0 )) || die 'run this installer as your regular user, not with sudo; makepkg will request sudo through pacman when needed'
     cat <<'EOF'
 Optional Hyprland change:
-PR #16061 is unmerged. It changes screen captures for windows and
-layers using Hyprland's `no_screen_share` rule: the marked view is skipped so
-the content behind it is captured instead of a black box. This applies to
-tiled and floating views; it does not change which windows float. Mirrored
-monitor captures keep the existing black-box fallback. Applying the patch only
-edits a local Hyprland source checkout; it does not build, install, or restart
-Hyprland. On a rerun after a Hyprland update, a clean checkout or one carrying
-only the earlier patch is moved to the installed release and patched again. If
-upstream changes prevent a safe merge, the installer reports the backup and
-stops for review.
-
-Hyprly Screen Test window:
-Optionally add rules to your Hyprland config so this window floats and is
-excluded from screen sharing. The installer appends the Hyprland syntax to
-hyprland.conf and the Lua syntax to hyprland.lua in your Hypr config directory.
-Reload Hyprland to apply the rules from whichever config is active.
+PR #16061 was closed. It changes screen captures for
+windows and layers using Hyprland's `no_screen_share` rule: the marked view is
+skipped so the content behind it is captured instead of a black box. It applies
+to tiled and floating views; it does not change which windows float. Mirrored
+monitor captures keep the existing black-box fallback. Choosing Yes builds a
+patched Hyprland package from the official v0.56.2 source archive, checks the
+patch marker, and installs the matching hyprland and hyprpm packages with
+pacman. If hyprland-debug is installed, it updates that package too. The current
+Hyprland session must be restarted before the change takes effect. The included
+patch port supports the Arch Hyprland 0.56.2-4 package; choose No to leave
+Hyprland unchanged.
 
 Hyprly package installation:
 This builds Hyprly and uses pacman to install the package and any missing
 runtime or build dependencies. It writes system package files and changes the
 pacman database; makepkg may ask for sudo access. Run this script as your
-regular user, not with sudo. Build files, downloaded sources, and package
-archives are kept under the user cache, outside this project checkout.
+regular user, not with sudo. Hyprland and Hyprly build files, downloaded
+sources, and package archives are kept under the user cache, outside this
+project checkout. The Hyprly package is always built and installed after the
+patch question; there is no separate confirmation for it.
 EOF
     printf '\n'
 
-    if ask_yes_no 'Apply the optional Hyprland PR #16061 source patch?'; then
-        patch_requested=1
-        hyprland_source="$(read_source_path)"
-    fi
-    if ask_yes_no 'Configure the Hyprly Screen Test window to float and stay out of screen shares?'; then
-        window_rules_requested=1
-    fi
-    if ask_yes_no 'Build and install the Hyprly system package?'; then
-        install_requested=1
-    fi
-
-    if (( patch_requested == 0 && window_rules_requested == 0 && install_requested == 0 )); then
-        printf '\nNo changes selected.\n'
-        return 0
-    fi
-
-    if (( patch_requested )); then
-        patch_hyprland "$hyprland_source"
-    fi
-    if (( window_rules_requested )); then
+    if ask_yes_no 'Apply the screen-sharing patch?'; then
+        install_patched_hyprland
         add_screen_test_window_rules
     fi
-    if (( install_requested )); then
-        install_hyprly "$@"
-    fi
+
+    install_hyprly "$@"
 }
 
 main "$@"

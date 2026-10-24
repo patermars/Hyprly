@@ -25,7 +25,9 @@ Hyprly is a Linux desktop app that captures meeting audio through PipeWire, tran
 
 Hyprly's floating overlay can stay visible on your desktop while remaining hidden from screen shares with the Hyprland patch enabled. This behavior is confirmed on **Hyprland 0.56.2**, commit `efb50993780079460b0cbed1363e2166a2de1d9f`.
 
-The Arch installer, [`install-arch.sh`](install-arch.sh), can apply [Hyprland PR #16061](https://github.com/hyprwm/Hyprland/commit/eb4edf1cd20ae02cae8c83b819cd8e59100572c). It patches a local Hyprland source checkout; you must build, install, and restart Hyprland separately. Future Hyprland updates may break the behavior or prevent the patch from applying. Rerun `./install-arch.sh` and select the patch option to try applying it again. If that does not work, ask your AI agent to adapt the patch for your Hyprland version using:
+The Arch installer, [install-arch.sh](install-arch.sh), can build and install a patched Hyprland package using [PR #16061](https://github.com/hyprwm/Hyprland/commit/eb4edf1cd20ae02cae8c83b819cd8e59100572c). It replaces the installed Hyprland package through pacman; log out and start a new Hyprland session to activate the change. The included port currently supports Hyprland 0.56.2. A future Hyprland update may replace the patched package or require an updated patch port.
+
+It takes around ~30 minutes(depending upon your cpu specs) to fully build and install the patched Hyprland.
 
 ## How it works
 
@@ -96,3 +98,7 @@ To install it as a native Arch package, run this from the project root:
 ## License
 
 [MIT](LICENSE) — © 2026 Aryan Kumar Sinha
+
+## Contributing
+
+Feel free to raise a pull request and contribute to Hyprly. Contributions and feedback are welcome!
