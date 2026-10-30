@@ -23,11 +23,11 @@ Hyprly is a Linux desktop app that captures meeting audio through PipeWire, tran
   <h1>⚠️ Hyprland floating overlay warning ⚠️</h1>
 </div>
 
-Hyprly's floating overlay can stay visible on your desktop while remaining hidden from screen shares with the Hyprland patch enabled. This behavior is confirmed on **Hyprland 0.56.2**, commit `efb50993780079460b0cbed1363e2166a2de1d9f`.
+Hyprly's floating overlay can stay visible on your desktop while remaining hidden from screen shares with the Hyprland patch enabled. This behavior is confirmed on **Hyprland 0.56.2** and **Hyprland 0.57.0**.
 
-The Arch installer, [install-arch.sh](install-arch.sh), can build and install a patched Hyprland package using [PR #16061](https://github.com/hyprwm/Hyprland/commit/eb4edf1cd20ae02cae8c83b819cd8e59100572c). It replaces the installed Hyprland package through pacman; log out and start a new Hyprland session to activate the change. The included port currently supports Hyprland 0.56.2. A future Hyprland update may replace the patched package or require an updated patch port.
+The Arch installer, [install-arch.sh](install-arch.sh), builds and installs a patched Hyprland package through pacman. It uses [PR #16061](https://github.com/hyprwm/Hyprland/commit/eb4edf1cd20ae02cae8c83b819cd8e59100572c) for Hyprland 0.56.2 and [PR #16638](https://github.com/hyprwm/Hyprland/pull/16638) for Hyprland 0.57.0. The installer checks the installed Hyprland version and only supports these two releases. Log out and start a new Hyprland session to activate the change. A future Hyprland update may replace the patched package or require an updated patch port.
 
-It takes around ~30 minutes(depending upon your cpu specs) to fully build and install the patched Hyprland.
+It takes around 30 minutes, depending on your CPU, to build and install the patched Hyprland.
 
 ## How it works
 

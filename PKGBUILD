@@ -23,7 +23,7 @@ if [[ -n ${startdir:-} && -f "$startdir/src/main.rs" ]]; then
 fi
 
 pkgname=hyprly-git
-pkgver=3.1.0.r3.g96b07e3
+pkgver=3.1.0.r0.g7ac23a7
 pkgrel=1
 pkgdesc='GTK4 AI meeting assistant with a mobile client'
 arch=('x86_64')
