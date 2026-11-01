@@ -2,12 +2,12 @@
   <title id="title">Hyprly clone history</title>
   <desc id="desc">Cumulative Git clone history over time.</desc>
   <rect width="800" height="292" fill="#0d1015" />
-  <line x1="57" y1="38.5" x2="62" y2="38.5" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="43.5" text-anchor="end" fill="#f4f4f5" font-size="15">487</text><line x1="57" y1="129.1" x2="62" y2="129.1" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="134.1" text-anchor="end" fill="#f4f4f5" font-size="15">244</text><line x1="57" y1="219.6" x2="62" y2="219.6" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="224.6" text-anchor="end" fill="#f4f4f5" font-size="15">1</text>
+  <line x1="57" y1="38.5" x2="62" y2="38.5" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="43.5" text-anchor="end" fill="#f4f4f5" font-size="15">492</text><line x1="57" y1="129.1" x2="62" y2="129.1" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="134.1" text-anchor="end" fill="#f4f4f5" font-size="15">246</text><line x1="57" y1="219.6" x2="62" y2="219.6" stroke="#f4f4f5" stroke-width="2" /><text x="49" y="224.6" text-anchor="end" fill="#f4f4f5" font-size="15">1</text>
   <line x1="62" y1="24" x2="62" y2="220" stroke="#f4f4f5" stroke-width="2" />
   <line x1="62" y1="220" x2="782" y2="220" stroke="#f4f4f5" stroke-width="2" />
-  <path d="M62.0 219.6 L85.2 219.6 L108.5 219.3 L131.7 219.3 L154.9 219.3 L178.1 219.3 L201.4 218.5 L224.6 218.5 L247.8 208.8 L271.0 208.4 L294.3 208.1 L317.5 207.7 L340.7 207.0 L363.9 207.0 L387.2 196.9 L410.4 148.1 L433.6 125.0 L456.8 113.4 L480.1 102.2 L503.3 100.7 L526.5 88.4 L549.7 81.0 L573.0 73.9 L596.2 65.0 L619.4 55.3 L642.6 53.0 L665.9 51.2 L689.1 45.2 L712.3 43.7 L735.5 41.5 L758.8 38.5 L782.0 38.5" fill="none" stroke="#ff686f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-  <text x="62.0" y="245" text-anchor="start" fill="#f4f4f5" font-size="15">Sep 30, 2026</text><text x="410.4" y="245" text-anchor="middle" fill="#f4f4f5" font-size="15">Oct 15, 2026</text><text x="782.0" y="245" text-anchor="end" fill="#f4f4f5" font-size="15">Oct 31, 2026</text>
+  <path d="M62.0 219.6 L84.5 219.6 L107.0 219.3 L129.5 219.3 L152.0 219.3 L174.5 219.3 L197.0 218.5 L219.5 218.5 L242.0 208.9 L264.5 208.6 L287.0 208.2 L309.5 207.8 L332.0 207.1 L354.5 207.1 L377.0 197.1 L399.5 148.8 L422.0 125.9 L444.5 114.5 L467.0 103.4 L489.5 101.9 L512.0 89.8 L534.5 82.4 L557.0 75.4 L579.5 66.5 L602.0 56.9 L624.5 54.7 L647.0 52.9 L669.5 47.0 L692.0 45.5 L714.5 43.3 L737.0 40.3 L759.5 38.5 L782.0 38.5" fill="none" stroke="#ff686f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  <text x="62.0" y="245" text-anchor="start" fill="#f4f4f5" font-size="15">Sep 30, 2026</text><text x="422.0" y="245" text-anchor="middle" fill="#f4f4f5" font-size="15">Oct 16, 2026</text><text x="782.0" y="245" text-anchor="end" fill="#f4f4f5" font-size="15">Nov 1, 2026</text>
   <text x="422.0" y="274" text-anchor="middle" fill="#f4f4f5" font-size="14">Date</text>
   <text x="18" y="122.0" transform="rotate(-90 18 122.0)" text-anchor="middle" fill="#f4f4f5" font-size="14">Git clones</text>
-  <text x="62" y="289" fill="#a1a1aa" font-size="10">Updated on Oct 31, 2026</text>
+  <text x="62" y="289" fill="#a1a1aa" font-size="10">Updated on Nov 1, 2026</text>
 </svg>
