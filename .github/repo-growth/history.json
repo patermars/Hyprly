@@ -1,11 +1,11 @@
 {
   "version": 1,
   "repository": "patermars/Hyprly",
-  "updatedAt": "2026-11-05T12:23:27.850Z",
+  "updatedAt": "2026-11-06T12:08:21.573Z",
   "backfilledAt": "",
   "totals": {
     "downloads": 0,
-    "clones": 551
+    "clones": 554
   },
   "assets": {},
   "traffic": {
@@ -153,6 +153,10 @@
       "2026-11-04": {
         "count": 20,
         "uniques": 11
+      },
+      "2026-11-05": {
+        "count": 3,
+        "uniques": 2
       }
     }
   },
@@ -414,7 +418,14 @@
       "stars": 0,
       "forks": 0,
       "downloads": 0,
-      "clones": 551
+      "clones": 554
+    },
+    {
+      "date": "2026-11-06",
+      "stars": 0,
+      "forks": 0,
+      "downloads": 0,
+      "clones": 554
     }
   ]
 }
