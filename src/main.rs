@@ -1,3 +1,4 @@
+mod activity;
 mod api;
 mod audio;
 mod config;
@@ -88,7 +89,7 @@ fn print_config() -> Result<()> {
         String::new()
     };
     config.api.api_keys = vec!["<redacted>".into(); configured_key_count];
-    print!("{}", toml::to_string_pretty(&config)?);
+    print!("{}", toml_edit::ser::to_string_pretty(&config)?);
     Ok(())
 }
 

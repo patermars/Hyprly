@@ -2,7 +2,6 @@ use crate::api::types::{ChatMessage, ChatRequest, ChatResponse, ResponseFormat};
 use crate::config::ApiConfig;
 use anyhow::{bail, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::sync::mpsc;
 
@@ -248,7 +247,7 @@ impl GroqClient {
             }),
         };
 
-        let response = self
+        let mut response = self
             .send_with_api_keys(
                 |key| {
                     self.client
@@ -260,11 +259,10 @@ impl GroqClient {
             )
             .await?;
 
-        let mut stream = response.bytes_stream();
         let mut pending = Vec::new();
 
-        while let Some(chunk) = stream.next().await {
-            pending.extend_from_slice(&chunk?);
+        while let Some(chunk) = response.chunk().await? {
+            pending.extend_from_slice(&chunk);
             while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
                 let mut line: Vec<_> = pending.drain(..=newline).collect();
                 line.pop();

@@ -67,7 +67,13 @@ provides=(wayland-compositor)
 _archive="${pkgname^}-$pkgver"
 source=("$_archive.tar.gz::$url/releases/download/v$pkgver/source-v$pkgver.tar.gz"
         "hyprland-pr16061-v$pkgver.patch")
-sha256sums=('03ad3f5ef152ff44116ffd56fcf808486211ecabf4f0ba567108ee746ba5cd2e'
+# SHA-256 published for source-v$pkgver.tar.gz in each upstream GitHub release.
+case "$pkgver" in
+    0.56.2) _source_sha256='03ad3f5ef152ff44116ffd56fcf808486211ecabf4f0ba567108ee746ba5cd2e' ;;
+    0.57.0) _source_sha256='82d006ba9264fe67266c7d583c16f1a6c64d51424dbdc472c3e9c9d5ddfcd559' ;;
+    *) return 1 ;;
+esac
+sha256sums=("$_source_sha256"
             'PATCH_SHA256_PLACEHOLDER')
 
 prepare() {

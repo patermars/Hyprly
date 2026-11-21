@@ -109,6 +109,7 @@ impl Tray for HyprlyTray {
 }
 
 struct AppState {
+    activity: crate::activity::Reporter,
     application: gtk::Application,
     window: gtk::ApplicationWindow,
     api_key: gtk::Entry,
@@ -1589,6 +1590,7 @@ fn build_window(application: &gtk::Application) {
         .ok()
         .and_then(|config| config.screen.mouse_gesture);
     let state = Rc::new(std::cell::RefCell::new(AppState {
+        activity: crate::activity::Reporter::start(),
         application: application.clone(),
         window: window.clone(),
         api_key: api_key.clone(),
@@ -1823,7 +1825,11 @@ fn hyprland_set_window_pinned(
         .ok_or_else(|| anyhow::anyhow!("Hyprland did not report the window address"))?;
     let selector = format!("address:{address}");
     if uses_lua_dispatch {
-        let action = if should_be_pinned { "enable" } else { "disable" };
+        let action = if should_be_pinned {
+            "enable"
+        } else {
+            "disable"
+        };
         hyprland_lua_dispatch(&format!(
             "hl.dsp.window.pin({{ action = \"{action}\", window = \"{selector}\" }})"
         ))
@@ -2742,7 +2748,7 @@ fn open_config_editor(state: &Rc<std::cell::RefCell<AppState>>) {
                 let position_message = saved_position
                     .map(|(x, y)| format!(" Position saved at ({x}, {y})."))
                     .unwrap_or_else(|| " The window will be centered when it opens.".to_string());
-                let result = toml::to_string_pretty(&updated)
+                let result = toml_edit::ser::to_string_pretty(&updated)
                     .map_err(anyhow::Error::from)
                     .and_then(|serialized| crate::config::Config::save_config_text(&serialized));
                 match result {
@@ -2854,17 +2860,60 @@ fn available_audio_sources() -> Vec<(String, String)> {
 }
 
 fn decode_png(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(data);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let mut pixels = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut pixels).ok()?;
-    let (width, height) = (info.width as usize, info.height as usize);
-    if info.color_type != png::ColorType::Rgba {
+    use gtk::gdk_pixbuf::prelude::PixbufLoaderExt;
+
+    // GTK already supplies a PNG decoder; share it with the tray and wordmarks.
+    let loader = gtk::gdk_pixbuf::PixbufLoader::with_type("png").ok()?;
+    let loaded = loader.write(data);
+    let closed = loader.close();
+    loaded.ok()?;
+    closed.ok()?;
+    let image = loader.pixbuf()?;
+    if !image.has_alpha() || image.n_channels() != 4 || image.bits_per_sample() != 8 {
         return None;
     }
-    pixels.truncate(info.buffer_size());
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let stride = image.rowstride() as usize;
+    let bytes = image.read_pixel_bytes();
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for row in 0..height {
+        pixels.extend_from_slice(bytes.get(row * stride..row * stride + width * 4)?);
+    }
     Some((width, height, pixels))
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::decode_png;
+    use gtk4::glib::{compute_checksum_for_data, ChecksumType};
+
+    #[test]
+    fn gtk_decoder_preserves_bundled_rgba_pixels() {
+        // Digests of the original decoded assets, independent of the GTK decoder.
+        for (data, dimensions, digest) in [
+            (
+                include_bytes!("../assets/logo.png").as_slice(),
+                (1254, 1254),
+                "8c2ffcb8ab7b9a830dfb376261a6cba26172bbe349c3621c633bc6ec54943e95",
+            ),
+            (
+                include_bytes!("../assets/logo_text.png").as_slice(),
+                (2164, 727),
+                "998b6c9cc5e903b369c1c21ab2fa66984532514c03ddc2e6fbf14426fc287c58",
+            ),
+            (
+                include_bytes!("../assets/logo_text_white.png").as_slice(),
+                (2164, 727),
+                "afbf94318398d57095a5a2849fa9ec3a1bc9b90f54d6f53a5fccf729f2e68538",
+            ),
+        ] {
+            let (width, height, pixels) = decode_png(data).unwrap();
+            assert_eq!((width, height), dimensions);
+            let actual = compute_checksum_for_data(ChecksumType::Sha256, &pixels).unwrap();
+            assert_eq!(actual.as_str(), digest);
+        }
+        assert!(decode_png(b"invalid PNG").is_none());
+    }
 }
 
 fn section_heading(text: &str) -> gtk::Label {
@@ -3405,6 +3454,7 @@ fn stop_backend(state: &Rc<std::cell::RefCell<AppState>>) {
     reap_child(overlay_child);
     clear_pairing(state);
     state.borrow_mut().paired = false;
+    state.borrow().activity.connection(false);
     let state_ref = state.borrow();
     state_ref.connect_button.set_sensitive(true);
     state_ref.disconnect_button.set_sensitive(false);
@@ -3506,6 +3556,7 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
         reap_child(overlay);
         clear_pairing(state);
         state.borrow_mut().paired = false;
+        state.borrow().activity.connection(false);
         let state_ref = state.borrow();
         state_ref.connect_button.set_sensitive(true);
         state_ref.disconnect_button.set_sensitive(false);
@@ -3523,7 +3574,9 @@ fn poll_events(state: &Rc<std::cell::RefCell<AppState>>) {
         let mut state_ref = state.borrow_mut();
         match event {
             UiEvent::Connection(connected) => {
+                let connected = connected && state_ref.child.is_some();
                 state_ref.paired = connected;
+                state_ref.activity.connection(connected);
                 if !connected {
                     state_ref.trigger_clicks = None;
                     stop_screen_process(&mut state_ref);

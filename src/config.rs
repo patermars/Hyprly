@@ -255,16 +255,27 @@ fn default_filler_filter() -> bool {
     true
 }
 
+pub(crate) fn xdg_dir(variable: &str, home_subdir: &str) -> Option<PathBuf> {
+    env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            env::home_dir()
+                .filter(|home| !home.as_os_str().is_empty())
+                .map(|home| home.join(home_subdir))
+        })
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
+        xdg_dir("XDG_CONFIG_HOME", ".config")
             .unwrap_or_else(|| PathBuf::from("."))
             .join("hyprly/config.toml")
     }
 
     pub fn save_config_text(contents: &str) -> anyhow::Result<()> {
         // Reject malformed or structurally invalid configuration before replacing the file.
-        let _: Self = toml::from_str(contents)?;
+        let _: Self = toml_edit::de::from_str(contents)?;
         let path = Self::config_path();
         Self::write_config(&path, contents)
     }
@@ -272,7 +283,7 @@ impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path();
         let mut config = if path.exists() {
-            toml::from_str(&fs::read_to_string(path)?)?
+            toml_edit::de::from_str(&fs::read_to_string(path)?)?
         } else {
             Self::default()
         };
@@ -402,4 +413,27 @@ fn table_section_mut<'a>(
     document[section]
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("The [{section}] config section must be a TOML table"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, MouseGesture};
+
+    #[test]
+    fn configuration_round_trips_with_nested_tables_and_api_keys() {
+        let mut config: Config =
+            toml_edit::de::from_str(include_str!("../config.example.toml")).unwrap();
+        config.api.api_keys = vec!["first-key".into(), "second-key".into()];
+        config.screen.mouse_gesture = Some(MouseGesture {
+            button: 8,
+            clicks: 2,
+        });
+        let text = toml_edit::ser::to_string_pretty(&config).unwrap();
+        let restored: Config = toml_edit::de::from_str(&text).unwrap();
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
+        assert!(toml_edit::de::from_str::<Config>("[api]\napi_keys = 42").is_err());
+    }
 }

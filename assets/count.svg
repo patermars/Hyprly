@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="292" viewBox="0 0 800 292" role="img" aria-labelledby="title desc">
+<title id="title">Hyprly activity history</title>
+<desc id="desc">Monthly connection reports, not cumulative users or users online now. The current month is incomplete.</desc>
+<rect width="800" height="292" fill="#0d1015"/>
+<g font-family="sans-serif" fill="#f4f4f5">
+<path d="M62 24V220H782" fill="none" stroke="#f4f4f5" stroke-width="2"/>
+<path d="M57 220.0H62" stroke="#f4f4f5" stroke-width="2"/>
+<text x="49" y="225.0" text-anchor="end" font-size="15">0</text>
+<path d="M57 122.0H62" stroke="#f4f4f5" stroke-width="2"/>
+<text x="49" y="127.0" text-anchor="end" font-size="15">1</text>
+<path d="M57 24.0H62" stroke="#f4f4f5" stroke-width="2"/>
+<text x="49" y="29.0" text-anchor="end" font-size="15">2</text>
+<path d="M422.0 122.0" fill="none" stroke="#ff686f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="422.0" cy="122.0" r="3" fill="#ff686f"/>
+<text x="422.0" y="245" text-anchor="middle" font-size="15">Nov 2026</text>
+<text x="422" y="274" text-anchor="middle" font-size="14">Month</text>
+<text x="18" y="122" transform="rotate(-90 18 122)" text-anchor="middle" font-size="14">Active User Count</text>
+<text x="62" y="289" fill="#a1a1aa" font-size="10">Updated on Nov 21, 2026</text>
+</g></svg>

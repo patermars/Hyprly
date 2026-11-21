@@ -1,8 +1,8 @@
-name: Update clone history
+name: Update repository statistics
 
 on:
   schedule:
-    - cron: "17 4 * * *"
+    - cron: "17 4 * * 1" # Every Monday
   workflow_dispatch:
 
 permissions:
@@ -17,10 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Update clone history chart
-        uses: MacRimi/repo-growth@v1
+      - name: Update monthly activity history, chart, and README badge and link
+        run: python3 src/render_activity_chart.py
+
+      - name: Update clone history
+        uses: MacRimi/repo-growth@aa67f0c60a4d2c83750b36ebaeb29198a010161b # v1
         with:
           metrics: clones
           layout: separate
@@ -28,16 +31,18 @@ jobs:
           traffic-token: ${{ secrets.REPO_GROWTH_TRAFFIC_TOKEN }}
           commit: false
 
-      - name: Render plot-only clone chart
-        run: python3 src/render_clone_chart.py
+      # Clone chart is not displayed in the README.
+      # - name: Render plot-only clone chart
+      #   run: python3 src/render_clone_chart.py
 
-      - name: Commit updated clone history
+      - name: Commit updated repository statistics
         run: |
           git config user.name "PaterMars"
           git config user.email "patermars@outlook.com"
-          git add .github/repo-growth/history.json assets/repo-growth-clones.svg
+          git add .github/repo-growth/history.json .github/activity/history.json assets/count.svg README.md
+          # git add assets/repo-growth-clones.svg
           if git diff --cached --quiet; then
-            echo "Clone history is already up to date."
+            echo "Repository statistics are already up to date."
           else
             git commit -m "Updated repo stats"
             git push

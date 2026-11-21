@@ -200,7 +200,16 @@ function renderMarkdown(text) {
   html = html.replace(/\*([^\*]+)\*/g, '<em>$1</em>');
   html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    try {
+      const url = new URL(href, 'https://hyprly.invalid/');
+      if (!['https:', 'http:', 'mailto:'].includes(url.protocol)) return label;
+      const attribute = href.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      return `<a href="${attribute}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    } catch (_) {
+      return label;
+    }
+  });
   html = html.replace(/^#### (.*$)/gm, '<h4>$1</h4>');
   html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');

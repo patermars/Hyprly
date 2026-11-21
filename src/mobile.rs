@@ -14,19 +14,18 @@ use rcgen::{
     Issuer, KeyPair, KeyUsagePurpose,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, AtomicU8, AtomicUsize},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -39,6 +38,7 @@ use crate::response::AiResponse;
 #[derive(Clone)]
 pub struct MobileHub {
     code: Arc<String>,
+    pairing_attempts: Arc<Mutex<PairingAttempts>>,
     events: broadcast::Sender<String>,
     pub paused: Arc<AtomicBool>,
     commands: broadcast::Sender<MobileCommand>,
@@ -97,11 +97,7 @@ impl MobileCommand {
 
 impl MobileHub {
     pub fn new(answer_target: &str) -> anyhow::Result<Self> {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let code = format!("{:06}", (seed % 1_000_000) as u32);
+        let code = pairing_code(&mut fs::File::open("/dev/urandom")?)?;
         let (events, _) = broadcast::channel(128);
         let (commands, _) = broadcast::channel(32);
         let (connected, _) = watch::channel(false);
@@ -114,6 +110,7 @@ impl MobileHub {
         let https_base = format!("https://{host}:8766");
         Ok(Self {
             code: Arc::new(code),
+            pairing_attempts: Arc::new(Mutex::new(PairingAttempts::default())),
             events,
             paused: Arc::new(AtomicBool::new(false)),
             commands,
@@ -225,11 +222,17 @@ impl MobileHub {
     }
 
     pub fn pair_local(&self, code: &str) -> bool {
-        if code.trim() != self.code.as_str() {
+        if !self.authorize_pairing(code.trim()) {
             return false;
         }
         self.set_local_connected(true);
         true
+    }
+
+    fn authorize_pairing(&self, code: &str) -> bool {
+        self.pairing_attempts
+            .lock()
+            .is_ok_and(|mut attempts| attempts.accept(code, self.code.as_str(), Instant::now()))
     }
 
     pub fn local_is_connected(&self) -> bool {
@@ -250,8 +253,53 @@ impl MobileHub {
     }
 }
 
+#[derive(Default)]
+struct PairingAttempts {
+    window: Option<Instant>,
+    failures: u8,
+}
+
+impl PairingAttempts {
+    fn accept(&mut self, code: &str, expected: &str, now: Instant) -> bool {
+        // Share the budget across sockets and uploads so reconnecting or switching
+        // endpoints cannot bypass the limit on guessing a six-digit code.
+        if self
+            .window
+            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(60))
+        {
+            self.window = Some(now);
+            self.failures = 0;
+        }
+        if self.failures >= 10 {
+            return false;
+        }
+        if code == expected {
+            return true;
+        }
+        self.failures += 1;
+        false
+    }
+}
+
+fn pairing_code(random: &mut impl Read) -> std::io::Result<String> {
+    // Reject the partial range so every six-digit code is equally likely.
+    const LIMIT: u32 = u32::MAX - u32::MAX % 1_000_000;
+    loop {
+        let mut bytes = [0; 4];
+        random.read_exact(&mut bytes)?;
+        let value = u32::from_le_bytes(bytes);
+        if value < LIMIT {
+            return Ok(format!("{:06}", value % 1_000_000));
+        }
+    }
+}
+
 fn certificate_fingerprint(pem: &str) -> String {
-    Sha256::digest(pem.as_bytes())
+    let mut checksum =
+        gtk4::glib::Checksum::new(gtk4::glib::ChecksumType::Sha256).expect("GLib supports SHA-256");
+    checksum.update(pem.as_bytes());
+    checksum
+        .digest()
         .iter()
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
@@ -412,12 +460,32 @@ struct ExtractQuery {
 
 static UPLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+struct TemporaryUpload(PathBuf);
+
+impl TemporaryUpload {
+    fn create(path: PathBuf) -> std::io::Result<(Self, fs::File)> {
+        // Never follow a pre-existing symlink or overwrite another user's file.
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        Ok((Self(path), file))
+    }
+}
+
+impl Drop for TemporaryUpload {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 async fn extract_document(
     Query(query): Query<ExtractQuery>,
     State(hub): State<MobileHub>,
     body: Bytes,
 ) -> Response {
-    if query.code != hub.code.as_str() {
+    if !hub.authorize_pairing(&query.code) {
         return (
             axum::http::StatusCode::UNAUTHORIZED,
             axum::Json(json!({"error":"Pair with Hyprly before uploading documents."})),
@@ -434,6 +502,7 @@ async fn extract_document(
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
                     .spawn()
                 {
                     Ok(child) => child,
@@ -464,11 +533,22 @@ async fn extract_document(
                 let path = std::env::temp_dir()
                     .join(format!("hyprly-upload-{}-{id}.docx", std::process::id()));
                 let result = async {
-                    tokio::fs::write(&path, &body).await.map_err(|_| {
+                    let (upload, file) = TemporaryUpload::create(path).map_err(|_| {
                         "Could not store the uploaded document temporarily.".to_string()
                     })?;
+                    let mut file = tokio::fs::File::from_std(file);
+                    file.write_all(&body).await.map_err(|_| {
+                        "Could not store the uploaded document temporarily.".to_string()
+                    })?;
+                    file.flush().await.map_err(|_| {
+                        "Could not store the uploaded document temporarily.".to_string()
+                    })?;
+                    drop(file);
                     let output = Command::new("unzip")
-                        .args(["-p", path.to_str().unwrap_or_default(), "word/document.xml"])
+                        .arg("-p")
+                        .arg(&upload.0)
+                        .arg("word/document.xml")
+                        .kill_on_drop(true)
                         .output()
                         .await
                         .map_err(|_| "DOCX support requires the unzip utility.".to_string())?;
@@ -479,7 +559,6 @@ async fn extract_document(
                         .map_err(|_| "The DOCX document contains invalid text.".to_string())
                 }
                 .await;
-                let _ = tokio::fs::remove_file(path).await;
                 result
             }
         }
@@ -497,18 +576,22 @@ async fn extract_document(
 }
 
 async fn websocket(ws: WebSocketUpgrade, State(hub): State<MobileHub>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, hub))
+    ws.max_message_size(256 * 1024)
+        .max_frame_size(256 * 1024)
+        .on_upgrade(move |socket| handle_socket(socket, hub))
 }
 
 async fn handle_socket(mut socket: WebSocket, hub: MobileHub) {
-    let Some(Ok(Message::Text(first))) = socket.recv().await else {
+    let Ok(Some(Ok(Message::Text(first)))) =
+        tokio::time::timeout(Duration::from_secs(10), socket.recv()).await
+    else {
         return;
     };
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(&first) else {
         return;
     };
     if payload.get("type").and_then(|v| v.as_str()) != Some("pair")
-        || payload.get("code").and_then(|v| v.as_str()) != Some(hub.code.as_str())
+        || !hub.authorize_pairing(payload.get("code").and_then(|v| v.as_str()).unwrap_or(""))
     {
         let _ = socket
             .send(Message::Text(
@@ -628,7 +711,126 @@ pub fn start(hub: MobileHub) {
 
 #[cfg(test)]
 mod tests {
-    use super::MobileCommand;
+    use super::{pairing_code, MobileCommand, PairingAttempts, TemporaryUpload, UPLOAD_SEQUENCE};
+    use std::{
+        fs,
+        io::ErrorKind,
+        os::unix::fs::PermissionsExt,
+        sync::atomic::Ordering,
+        time::{Duration, Instant},
+    };
+
+    #[tokio::test]
+    async fn shared_tls_provider_serves_https_and_verifies_certificate_trust() {
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca = super::ca_parameters().self_signed(&ca_key).unwrap();
+        let server_key = rcgen::KeyPair::generate().unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
+            .unwrap()
+            .signed_by(
+                &server_key,
+                &rcgen::Issuer::new(super::ca_parameters(), ca_key),
+            )
+            .unwrap();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            certificate.pem().into_bytes(),
+            server_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("https://{}/", listener.local_addr().unwrap());
+        let handle = axum_server::Handle::new();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "secure" }));
+        let server = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .unwrap()
+                .handle(handle.clone())
+                .serve(app.into_make_service()),
+        );
+        let trusted = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .add_root_certificate(reqwest::Certificate::from_pem(ca.pem().as_bytes()).unwrap())
+            .build()
+            .unwrap();
+        assert_eq!(
+            trusted
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "secure"
+        );
+        let untrusted = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        assert!(untrusted.get(url).send().await.unwrap_err().is_connect());
+        handle.shutdown();
+        server.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn certificate_fingerprint_formats_sha256_of_the_exact_file_bytes() {
+        assert_eq!(
+            super::certificate_fingerprint("abc\n"),
+            "ED:EA:AF:F3:F1:77:4A:D2:88:86:73:77:0C:6D:64:09:7E:39:1B:C3:62:D7:D6:FB:34:98:2D:DF:0E:FD:18:CB"
+        );
+    }
+
+    #[test]
+    fn pairing_limits_failed_guesses_and_recovers_after_the_window() {
+        let mut attempts = PairingAttempts::default();
+        let now = Instant::now();
+        for _ in 0..9 {
+            assert!(!attempts.accept("wrong", "123456", now));
+        }
+        assert!(attempts.accept("123456", "123456", now));
+        assert!(!attempts.accept("wrong", "123456", now));
+        assert!(!attempts.accept("123456", "123456", now + Duration::from_secs(59)));
+        assert!(attempts.accept("123456", "123456", now + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn pairing_code_rejects_biased_values_and_propagates_entropy_failures() {
+        let mut bytes = Vec::from(u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&42u32.to_le_bytes());
+        assert_eq!(pairing_code(&mut bytes.as_slice()).unwrap(), "000042");
+        assert_eq!(
+            pairing_code(&mut [].as_slice()).unwrap_err().kind(),
+            ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn temporary_upload_is_private_and_cannot_overwrite_files_or_follow_symlinks() {
+        let id = UPLOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("hyprly-upload-test-{}-{id}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("upload.docx");
+        let (upload, file) = TemporaryUpload::create(path.clone()).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(TemporaryUpload::create(path.clone()).is_err());
+        drop(file);
+        drop(upload);
+        assert!(!path.exists());
+
+        let victim = root.join("existing.txt");
+        fs::write(&victim, "keep me").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        assert!(TemporaryUpload::create(path.clone()).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+        fs::remove_file(path).unwrap();
+        fs::remove_file(victim).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn parses_commands_and_formats_context_once() {

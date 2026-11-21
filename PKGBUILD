@@ -55,7 +55,7 @@ pkgver() {
 
 build() {
     cd hyprly
-    cargo build --release
+    cargo build --release --locked
 }
 
 package() {

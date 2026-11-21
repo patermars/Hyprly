@@ -7,9 +7,9 @@
 
 ### Private meeting audio, with answers on your phone.
 
+<!-- activity-badge:start -->
+[![Active Users](https://counterapi.com/counter.svg?ns=patermars-hyprly&action=monthly-connected&key=2026-11&readOnly=true&label=Active+Users&color=ff686f&style=flat "Estimated monthly active installations (2026-11 UTC)")](#active-users)<!-- activity-badge:end -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![PipeWire](https://img.shields.io/badge/Audio-PipeWire-5b8.svg)](https://pipewire.org/)
 
 </div>
 
@@ -61,14 +61,14 @@ Install the dependencies and build tools with your distribution's package manage
 **Arch Linux**
 
 ```bash
-sudo pacman -S --needed base-devel git gtk4 pipewire wireplumber grim rust openssl pkgconf
+sudo pacman -S --needed base-devel git gtk4 pipewire wireplumber grim rust pkgconf
 ```
 
 **Debian / Ubuntu**
 
 ```bash
 sudo apt update
-sudo apt install build-essential git libgtk-4-dev libssl-dev pkg-config pipewire wireplumber grim rustc cargo
+sudo apt install build-essential git libgtk-4-dev pkg-config pipewire wireplumber grim rustc cargo
 ```
 
 ## Build and run
@@ -91,9 +91,9 @@ To install it as a native Arch package, run this from the project root:
 ./install-arch.sh
 ```
 
-## Clone history
+## Active Users
 
-![Hyprly clone history](assets/repo-growth-clones.svg)
+![Hyprly monthly activity reports (approximate)](assets/count.svg)
 
 ## License
 

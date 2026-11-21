@@ -189,7 +189,7 @@ install_patched_hyprland() {
     [[ "$(grep -Ec '^pkgrel=' "$recipe_dir/PKGBUILD")" == 1 ]] || die 'the bundled Hyprland package recipe has an unexpected pkgrel'
     [[ "$(grep -Fxc -- "            'PATCH_SHA256_PLACEHOLDER')" "$recipe_dir/PKGBUILD")" == 1 ]] || \
         die 'the bundled Hyprland recipe is missing its patch checksum placeholder'
-    sed -i "s/^pkgver=.*/pkgver=$upstream_version/; s/^pkgrel=.*/pkgrel=$repo_pkgrel.1/; s/^sha256sums=('[^']*'/sha256sums=('SKIP'/" "$recipe_dir/PKGBUILD" || \
+    sed -i "s/^pkgver=.*/pkgver=$upstream_version/; s/^pkgrel=.*/pkgrel=$repo_pkgrel.1/" "$recipe_dir/PKGBUILD" || \
         die 'could not adapt the Hyprland recipe to the installed release'
     sed -i "s/^pkgrel=$repo_pkgrel\\.1$/pkgrel=$patched_pkgrel/" "$recipe_dir/PKGBUILD" || \
         die 'could not set the patched Hyprland package release'

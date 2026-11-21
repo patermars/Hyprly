@@ -14,18 +14,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install stable --profile minimal
 
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libgtk-4-dev libssl-dev pkg-config
+          sudo apt-get install --yes libgtk-4-dev pkg-config
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo +stable build --release --locked
 
       - name: Package release archive and checksum
         shell: bash
@@ -37,7 +39,7 @@ jobs:
           sha256sum "$archive" > checksums.txt
 
       - name: Attach files to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: |
             hyprly-*.tar.gz
