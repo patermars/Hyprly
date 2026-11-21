@@ -92,10 +92,10 @@ run_makepkg() {
 }
 
 install_patched_hyprland() {
-    local installed_line installed_version repo_info repo_version installed_pkgver repo_pkgver
+    local installed_line installed_version repo_info repo_version installed_pkgver
     local upstream_version installed_pkgrel split_package installed_split_line installed_split_version installed_split_pkgver installed_split_pkgrel
     local patched_pkgrel patch_file patch_hash installed_patch_hash='' installed_debug_line=''
-    local repo_pkgrel recipe_patch_file
+    local patch_dir="$repo_root/packaging/arch/patches" patch_pr
     local recipe_dir recipe_cache_root project_dir command_name architecture package_name package_path package_version package_record
     local marker_contents actual_version
     local -a install_packages=() install_package_names=(hyprland hyprpm)
@@ -106,7 +106,7 @@ install_patched_hyprland() {
 
     installed_line="$(pacman -Q hyprland 2>/dev/null)" || die 'Hyprland is not installed according to pacman'
     installed_version="${installed_line##* }"
-    repo_info="$(pacman -Si hyprland 2>/dev/null)" || die 'Hyprland is not available in the currently configured/synced repositories'
+    repo_info="$(LC_ALL=C pacman -Si hyprland 2>/dev/null)" || die 'Hyprland is not available in the currently configured/synced repositories'
     repo_version="$(awk '$1 == "Version" && $2 == ":" { print $3; exit }' <<<"$repo_info")"
     [[ -n "$repo_version" ]] || die 'could not read the repository Hyprland version'
 
@@ -117,14 +117,14 @@ install_patched_hyprland() {
     fi
 
     installed_pkgver="${installed_version#*:}"
-    repo_pkgver="${repo_version#*:}"
     upstream_version="${installed_pkgver%-*}"
     case "$upstream_version" in
-        0.56.2|0.57.0) ;;
-        *) die "no screen-sharing patch is approved for Hyprland $upstream_version; supported versions are 0.56.2 and 0.57.0" ;;
+        0.56.2) patch_pr=16061 ;;
+        0.57.0|0.57.2) patch_pr=16638 ;;
+        *) die "no screen-sharing patch is approved for Hyprland $upstream_version; supported versions are 0.56.2, 0.57.0, and 0.57.2" ;;
     esac
-    patch_file="$repo_root/packaging/arch/hyprland-pr16061/hyprland-pr16061-v${upstream_version}.patch"
-    [[ -s "$patch_file" ]] || die "the PR #16061 patch for Hyprland $upstream_version is missing: $patch_file"
+    patch_file="$patch_dir/hyprland-pr${patch_pr}-v${upstream_version}.patch"
+    [[ -s "$patch_file" ]] || die "the PR #$patch_pr patch for Hyprland $upstream_version is missing: $patch_file"
     patch_hash="$(sha256sum -- "$patch_file" | awk '{ print $1 }')" || die 'could not calculate the Hyprland patch checksum'
 
     if [[ -f "$HYPRLAND_PATCH_MARKER" && ! -L "$HYPRLAND_PATCH_MARKER" ]]; then
@@ -141,13 +141,13 @@ install_patched_hyprland() {
     done
 
     installed_pkgrel="${installed_pkgver##*-}"
-    repo_pkgrel="${repo_pkgver##*-}"
     for split_package in hyprpm hyprland-debug; do
         installed_split_line="$(pacman -Q "$split_package" 2>/dev/null || true)"
         [[ -n "$installed_split_line" ]] || continue
 
         installed_split_version="${installed_split_line##* }"
         installed_split_pkgver="${installed_split_version#*:}"
+        [[ "${installed_split_pkgver%-*}" == "$upstream_version" ]] || continue
         installed_split_pkgrel="${installed_split_pkgver##*-}"
         if (( $(vercmp "$installed_pkgrel" "$installed_split_pkgrel") < 0 )); then
             installed_pkgrel="$installed_split_pkgrel"
@@ -178,25 +178,21 @@ install_patched_hyprland() {
 
     HYPRLAND_RECIPE_TMP="$(mktemp -d "$recipe_cache_root/.recipe.XXXXXX")" || die 'could not create a temporary Hyprland package recipe'
     recipe_dir="$HYPRLAND_RECIPE_TMP"
-    install -m 0644 -- "$repo_root/packaging/arch/hyprland-pr16061/PKGBUILD" "$recipe_dir/PKGBUILD" || \
+    install -m 0644 -- "$patch_dir/PKGBUILD" "$recipe_dir/PKGBUILD" || \
         die 'could not prepare the Hyprland package recipe'
-    recipe_patch_file="$recipe_dir/hyprland-pr16061-v${upstream_version}.patch"
-    install -m 0644 -- "$patch_file" "$recipe_patch_file" || \
+    install -m 0644 -- "$patch_file" "$recipe_dir/hyprland-screenshare-v${upstream_version}.patch" || \
         die 'could not prepare the Hyprland source patch'
 
-    [[ "$repo_pkgrel" =~ ^[0-9]+$ ]] || die "cannot derive the repository package release from $repo_version"
     [[ "$(grep -Ec '^pkgver=' "$recipe_dir/PKGBUILD")" == 1 ]] || die 'the bundled Hyprland package recipe has an unexpected pkgver'
     [[ "$(grep -Ec '^pkgrel=' "$recipe_dir/PKGBUILD")" == 1 ]] || die 'the bundled Hyprland package recipe has an unexpected pkgrel'
     [[ "$(grep -Fxc -- "            'PATCH_SHA256_PLACEHOLDER')" "$recipe_dir/PKGBUILD")" == 1 ]] || \
         die 'the bundled Hyprland recipe is missing its patch checksum placeholder'
-    sed -i "s/^pkgver=.*/pkgver=$upstream_version/; s/^pkgrel=.*/pkgrel=$repo_pkgrel.1/" "$recipe_dir/PKGBUILD" || \
+    sed -i "s/^pkgver=.*/pkgver=$upstream_version/; s/^pkgrel=.*/pkgrel=$patched_pkgrel/" "$recipe_dir/PKGBUILD" || \
         die 'could not adapt the Hyprland recipe to the installed release'
-    sed -i "s/^pkgrel=$repo_pkgrel\\.1$/pkgrel=$patched_pkgrel/" "$recipe_dir/PKGBUILD" || \
-        die 'could not set the patched Hyprland package release'
     sed -i "s/PATCH_SHA256_PLACEHOLDER/$patch_hash/" "$recipe_dir/PKGBUILD" || \
         die 'could not set the Hyprland patch checksum'
 
-    printf 'Building patched Hyprland %s-%s as Arch packages.\n' "$upstream_version" "$patched_pkgrel"
+    printf 'Building Hyprland %s-%s with PR #%s as Arch packages.\n' "$upstream_version" "$patched_pkgrel" "$patch_pr"
     run_makepkg "$recipe_dir" "$recipe_cache_root" --build-only --cleanbuild --noconfirm
 
     architecture="$(uname -m)"
@@ -222,8 +218,8 @@ install_patched_hyprland() {
         install_package_names+=("$package_name")
     fi
 
-    marker_contents="$(bsdtar -xOf "${install_packages[0]}" usr/share/hyprland/hyprland-pr16061.patch.sha256)" || \
-        die 'the built Hyprland package is missing its PR #16061 patch marker'
+    marker_contents="$(bsdtar -xOf "${install_packages[0]}" "${HYPRLAND_PATCH_MARKER#/}")" || \
+        die 'the built Hyprland package is missing its screen-sharing patch marker'
     [[ "$marker_contents" == "$patch_hash" ]] || die 'the built Hyprland package marker does not match the patch file'
 
     printf '\nInstalling these package files with pacman:\n'
@@ -319,17 +315,13 @@ main() {
     (( EUID != 0 )) || die 'run this installer as your regular user, not with sudo; makepkg will request sudo through pacman when needed'
     cat <<'EOF'
 Optional Hyprland change:
-PR #16061 was closed. It changes screen captures for
-windows and layers using Hyprland's `no_screen_share` rule: the marked view is
-skipped so the content behind it is captured instead of a black box. It applies
-to tiled and floating views; it does not change which windows float. Mirrored
-monitor captures keep the existing black-box fallback. Choosing Yes builds a
-patched Hyprland package from the official source archive, checks the
-patch marker, and installs the matching hyprland and hyprpm packages with
-pacman. If hyprland-debug is installed, it updates that package too. The current
-Hyprland session must be restarted before the change takes effect. The included
-patch ports support Hyprland 0.56.2 and 0.57.0; choose No to leave Hyprland
-unchanged on any other release.
+The screen-sharing patch lets monitor and region captures show the content
+behind windows and layers marked `no_screen_share`. The installer uses PR #16061
+for Hyprland 0.56.2 and PR #16638 for Hyprland 0.57.0 and 0.57.2.
+Choosing Yes builds from the official source archive, checks the patch marker,
+and installs matching hyprland and hyprpm packages with pacman. If hyprland-debug
+is installed, it updates that package too. Start a new Hyprland session to
+activate the patch. On other releases, choose No to install Hyprly on its own.
 
 Hyprly package installation:
 This builds Hyprly and uses pacman to install the package and any missing

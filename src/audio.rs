@@ -6,7 +6,7 @@ use crate::{
     response, topic,
     transcript::{self, CleanConfig},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     collections::{BTreeMap, VecDeque},
     io::Cursor,
@@ -15,10 +15,10 @@ use std::{
     time::Instant as StdInstant,
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::{mpsc, Semaphore},
-    time::{sleep, Duration, Instant},
+    time::{sleep, timeout, Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -31,10 +31,12 @@ pub(crate) const AUDIO_FRAME_SAMPLES: usize =
     (AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_MS / MILLISECONDS_PER_SECOND) as usize;
 const MAX_TRANSCRIPT_CHARS: usize = 12_000;
 const MIN_ENDPOINT_SILENCE_MS: u64 = 100;
+const CAPTURE_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct RecordedChunk {
     sequence: u64,
     wav: Vec<u8>,
+    speech_seen: bool,
     recorded_at: StdInstant,
     recording_ms: u128,
 }
@@ -140,26 +142,6 @@ fn append_transcript(existing: &mut String, incoming: &str) -> bool {
     true
 }
 
-fn is_silent(wav: &[u8], threshold: f32) -> bool {
-    let reader = match hound::WavReader::new(Cursor::new(wav)) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let spec = reader.spec();
-    if spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16 {
-        root_mean_square(
-            reader
-                .into_samples::<i16>()
-                .filter_map(|sample| sample.ok())
-                .map(|sample| sample as f32 / 32_768.0),
-        )
-        .map(|rms| rms < threshold)
-        .unwrap_or(true)
-    } else {
-        false
-    }
-}
-
 fn root_mean_square(samples: impl Iterator<Item = f32>) -> Option<f32> {
     let (sum_squares, count) = samples.fold((0.0, 0), |(sum, count), sample| {
         (sum + sample * sample, count + 1)
@@ -243,13 +225,20 @@ pub async fn run(
                 }
                 continue;
             }
-            mobile_clone.status("recording", "Recording");
             let recorded_at = StdInstant::now();
-            match record_chunk(&audio_clone, recorder_shutdown.clone(), connection.clone()).await {
-                Ok(Some(wav)) => {
+            match record_chunk(
+                &audio_clone,
+                &mobile_clone,
+                &recorder_shutdown,
+                connection.clone(),
+            )
+            .await
+            {
+                Ok(Some((wav, speech_seen))) => {
                     let chunk = RecordedChunk {
                         sequence,
                         wav,
+                        speech_seen,
                         recorded_at,
                         recording_ms: recorded_at.elapsed().as_millis(),
                     };
@@ -262,7 +251,7 @@ pub async fn run(
                 Ok(None) => continue,
                 Err(e) => {
                     eprintln!("Recording error: {e:#}");
-                    mobile_clone.status("error", "Recording failed");
+                    mobile_clone.status("error", &format!("Recording failed: {e}"));
                     sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -301,15 +290,14 @@ pub async fn run(
                     let started = StdInstant::now();
                     let mut connection_for_task = connection_for_task;
                     let result = if !*connection_for_task.borrow()
-                        || (audio_for_task.vad_enabled
-                            && is_silent(&chunk.wav, audio_for_task.silence_threshold))
+                        || (audio_for_task.vad_enabled && !chunk.speech_seen)
                     {
                         Ok(None)
                     } else {
                         mobile_for_task.status("transcribing", "Transcribing");
                         tokio::select! {
                             biased;
-                            _ = connection_for_task.changed() => Ok(None),
+                            _ = connection_for_task.wait_for(|connected| !*connected) => Ok(None),
                             result = groq_for_task.transcribe(
                                 &chunk.wav,
                                 &audio_for_task.transcription_model,
@@ -616,38 +604,106 @@ pub async fn run(
     Ok(())
 }
 
-async fn record_chunk(
-    config: &AudioConfig,
-    shutdown: CancellationToken,
-    mut connection: tokio::sync::watch::Receiver<bool>,
-) -> Result<Option<Vec<u8>>> {
+async fn recorder_command(source: &str) -> Result<Command> {
     let mut command = Command::new("pw-record");
+    let source = source.trim();
+    let properties = if source.is_empty() {
+        // Ask the session manager for the default output monitor. An explicit --target
+        // can get cleared by WirePlumber when it starts following the default device.
+        "{ stream.capture.sink = true state.restore-target = false }"
+    } else {
+        let status = timeout(
+            CAPTURE_IDLE_TIMEOUT,
+            Command::new(crate::pipewire::WPCTL)
+                .args(crate::pipewire::STATUS_ARGS)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .context("Timed out finding PipeWire audio devices")?
+        .context("Could not run wpctl to find PipeWire audio devices")?;
+        anyhow::ensure!(
+            status.status.success(),
+            "Could not query the PipeWire session"
+        );
+        if let Some(sink) =
+            crate::pipewire::selected_sink(&String::from_utf8_lossy(&status.stdout), source)
+        {
+            command.args(["--target", &sink.name]);
+            "{ stream.capture.sink = true node.dont-move = true node.dont-fallback = true }"
+        } else {
+            command.args(["--target", source]);
+            "{ node.dont-move = true node.dont-fallback = true }"
+        }
+    };
     command
-        .arg("--format")
-        .arg(AUDIO_PCM_FORMAT)
+        .args(["--properties", properties, "--format", AUDIO_PCM_FORMAT])
         .arg("--rate")
         .arg(AUDIO_SAMPLE_RATE.to_string())
         .arg("--channels")
         .arg(AUDIO_CHANNELS.to_string())
-        .arg("--raw")
-        .arg("-");
-    let source = if config.source.trim().is_empty() {
-        default_output_source().await.unwrap_or_default()
-    } else {
-        config.source.trim().to_string()
-    };
-    if !source.is_empty() {
-        command.args(["--target", &source]);
-    }
-    let mut child = command
+        .args(["--raw", "-"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .kill_on_drop(true);
+    Ok(command)
+}
+
+pub(crate) async fn check_capture(source: &str) -> Result<()> {
+    let mut child = recorder_command(source)
+        .await?
+        .spawn()
+        .context("Could not start pw-record")?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow::anyhow!("pw-record did not provide audio output"))?;
+        .context("pw-record did not provide audio output")?;
+    let mut frame = [0; AUDIO_FRAME_SAMPLES * std::mem::size_of::<i16>()];
+    timeout(CAPTURE_IDLE_TIMEOUT, stdout.read_exact(&mut frame))
+        .await
+        .context("No audio frames received from PipeWire")?
+        .context("PipeWire could not capture audio from the selected device")?;
+    child.kill().await?;
+    Ok(())
+}
 
+async fn record_chunk(
+    config: &AudioConfig,
+    mobile: &MobileHub,
+    shutdown: &CancellationToken,
+    mut connection: tokio::sync::watch::Receiver<bool>,
+) -> Result<Option<(Vec<u8>, bool)>> {
+    let mut child = recorder_command(&config.source)
+        .await?
+        .spawn()
+        .context("Could not start pw-record")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("pw-record did not provide audio output")?;
+    let result = tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => return Ok(None),
+        _ = connection.wait_for(|connected| !*connected) => return Ok(None),
+        result = read_utterance(&mut stdout, config, || mobile.status("recording", "Recording")) => result,
+    };
+    let (pcm, speech_seen) = result?;
+    if let Some(status) = child.try_wait()? {
+        anyhow::ensure!(status.success(), "pw-record stopped unexpectedly: {status}");
+    } else {
+        child.kill().await?;
+    }
+    anyhow::ensure!(!pcm.is_empty(), "pw-record produced no audio");
+    if config.vad_enabled && !speech_seen {
+        mobile.status("ready", "Listening for speech");
+    }
+    Ok(Some((encode_wav(&pcm)?, speech_seen)))
+}
+
+async fn read_utterance(
+    input: &mut (impl AsyncRead + Unpin),
+    config: &AudioConfig,
+    on_recording: impl Fn(),
+) -> Result<(Vec<u8>, bool)> {
     let sample_rate = AUDIO_SAMPLE_RATE as usize;
     let frame_bytes = AUDIO_FRAME_SAMPLES * std::mem::size_of::<i16>();
     let preferred_samples = config.chunk_seconds.max(1) as usize * sample_rate;
@@ -664,32 +720,12 @@ async fn record_chunk(
     let mut frame = vec![0_u8; frame_bytes];
     let mut speech_seen = false;
     let mut silent_samples = 0;
-    let mut stop_requested = false;
-
-    let mut cancelled = false;
     while pcm.len() / std::mem::size_of::<i16>() < max_samples {
-        match tokio::select! {
-            _ = shutdown.cancelled() => {
-                cancelled = true;
-                break;
-            }
-            changed = connection.changed() => {
-                if changed.is_err() || !*connection.borrow() {
-                    cancelled = true;
-                    break;
-                }
-                continue;
-            }
-            result = stdout.read_exact(&mut frame) => result,
-        } {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                anyhow::bail!("failed reading audio from pw-record: {error}");
-            }
-        }
+        match timeout(CAPTURE_IDLE_TIMEOUT, input.read_exact(&mut frame)).await {
+            Err(_) => anyhow::bail!("No audio frames received from PipeWire for 5 seconds"),
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Ok(result) => result.context("Failed reading audio from pw-record")?,
+        };
 
         let samples = frame.as_chunks::<2>().0;
         let rms = root_mean_square(
@@ -698,6 +734,11 @@ async fn record_chunk(
                 .map(|bytes| i16::from_le_bytes(*bytes) as f32 / 32_768.0),
         )
         .unwrap_or(0.0);
+        if (!speech_seen && rms >= config.silence_threshold && config.vad_enabled)
+            || (pcm.is_empty() && !config.vad_enabled)
+        {
+            on_recording();
+        }
         pcm.extend_from_slice(&frame);
 
         if rms >= config.silence_threshold {
@@ -708,54 +749,83 @@ async fn record_chunk(
             if pcm.len() / std::mem::size_of::<i16>() >= min_samples
                 && silent_samples >= endpoint_silence_samples
             {
-                stop_requested = true;
                 break;
             }
         }
     }
 
-    if pcm.len() / std::mem::size_of::<i16>() >= max_samples {
-        stop_requested = true;
-    }
-
-    let _ = child.kill().await;
-    let status = child.wait().await?;
-    if cancelled {
-        return Ok(None);
-    }
-    if pcm.is_empty() {
-        anyhow::bail!("pw-record produced no audio: {status}");
-    }
-
-    if !status.success() && !stop_requested {
-        anyhow::bail!("pw-record stopped unexpectedly: {status}");
-    }
-
-    Ok(Some(encode_wav(&pcm)?))
-}
-
-async fn default_output_source() -> Option<String> {
-    let output = Command::new(crate::pipewire::WPCTL)
-        .args(crate::pipewire::STATUS_ARGS)
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    crate::pipewire::default_sink(&String::from_utf8_lossy(&output.stdout))
+    Ok((pcm, speech_seen))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        append_transcript, encode_wav, PipelineState, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE,
-        MAX_TRANSCRIPT_CHARS,
+        append_transcript, encode_wav, read_utterance, recorder_command, PipelineState,
+        AUDIO_CHANNELS, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE, MAX_TRANSCRIPT_CHARS,
     };
     use crate::config::AudioConfig;
     use std::io::Cursor;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn default_capture_follows_the_output_monitor_without_an_explicit_target() {
+        let command = recorder_command("").await.unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(!args.contains(&"--target"));
+        assert!(args.windows(2).any(
+            |pair| pair[0] == "--properties" && pair[1].contains("stream.capture.sink = true")
+        ));
+    }
+
+    #[tokio::test]
+    async fn brief_speech_survives_the_surrounding_silence() {
+        let config = AudioConfig {
+            min_utterance_seconds: 1,
+            endpoint_silence_ms: 200,
+            silence_threshold: 0.02,
+            ..AudioConfig::default()
+        };
+        // One audible 100 ms frame in a quiet second, below threshold if averaged together.
+        let mut pcm = vec![0u8; AUDIO_SAMPLE_RATE as usize * 2];
+        for sample in
+            pcm[6 * AUDIO_FRAME_SAMPLES * 2..7 * AUDIO_FRAME_SAMPLES * 2].chunks_exact_mut(2)
+        {
+            sample.copy_from_slice(&1_000i16.to_le_bytes());
+        }
+        let recording_events = std::cell::Cell::new(0);
+        let (captured, speech_seen) = read_utterance(&mut pcm.as_slice(), &config, || {
+            recording_events.set(recording_events.get() + 1);
+        })
+        .await
+        .unwrap();
+        assert_eq!(captured, pcm);
+        assert!(speech_seen);
+        assert_eq!(recording_events.get(), 1);
+
+        pcm.fill(0);
+        let (_, speech_seen) = read_utterance(&mut pcm.as_slice(), &config, || {
+            panic!("silence should not start speech recording")
+        })
+        .await
+        .unwrap();
+        assert!(!speech_seen);
+    }
+
+    #[tokio::test]
+    async fn stalled_capture_returns_an_error_without_announcing_recording() {
+        let (_writer, mut reader) = tokio::io::duplex(64);
+        let error = read_utterance(&mut reader, &AudioConfig::default(), || {
+            panic!("no frames arrived")
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("No audio frames received"));
+    }
 
     #[test]
     fn drops_duplicate_and_overlapping_chunks() {

@@ -177,7 +177,11 @@ impl GroqClient {
             url: String,
         }
 
-        let encoded_image = STANDARD.encode(image);
+        let mut image_url = format!("data:{mime_type};base64,");
+        let encoded_len = base64::encoded_len(image.len(), true)
+            .ok_or_else(|| anyhow::anyhow!("Image is too large to encode"))?;
+        image_url.try_reserve_exact(encoded_len)?;
+        STANDARD.encode_string(image, &mut image_url);
         let request = ImageRequest {
             model: model.to_string(),
             messages: vec![ImageMessage {
@@ -189,9 +193,7 @@ impl GroqClient {
                     },
                     ImageContent::ImageUrl {
                         kind: "image_url".to_string(),
-                        image_url: ImageUrlValue {
-                            url: format!("data:{mime_type};base64,{encoded_image}"),
-                        },
+                        image_url: ImageUrlValue { url: image_url },
                     },
                 ],
             }],

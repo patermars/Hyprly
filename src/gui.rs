@@ -257,6 +257,7 @@ pub fn run_answer_overlay() {
             .build();
         logo.set_size_request(26, 26);
         let logo_surface = create_logo_surface();
+        let launcher_logo_surface = logo_surface.clone();
         logo.set_draw_func(move |_, context, width, height| {
             let scale = (width as f64 / logo_surface.width() as f64)
                 .min(height as f64 / logo_surface.height() as f64);
@@ -535,7 +536,6 @@ pub fn run_answer_overlay() {
             .content_height(64)
             .build();
         launcher_logo.set_size_request(64, 64);
-        let launcher_logo_surface = create_logo_surface();
         launcher_logo.set_draw_func(move |_, context, width, height| {
             let scale = (width as f64 / launcher_logo_surface.width() as f64)
                 .min(height as f64 / launcher_logo_surface.height() as f64);
@@ -1282,8 +1282,9 @@ fn build_window(application: &gtk::Application) {
         .build();
     wordmark.set_size_request(112, 38);
     wordmark.add_css_class("wordmark");
+    let initial_theme = load_gui_theme();
     let wordmark_surface = Rc::new(std::cell::RefCell::new(create_wordmark_surface(
-        &load_gui_theme(),
+        &initial_theme,
     )));
     wordmark.set_draw_func({
         let surface = wordmark_surface.clone();
@@ -1659,15 +1660,12 @@ fn build_window(application: &gtk::Application) {
 
     let theme_provider = theme_provider();
     let theme_names = ["midnight", "paper", "aurora"];
-    let initial_theme = load_gui_theme();
     let initial_index = theme_names
         .iter()
         .position(|name| *name == initial_theme)
         .unwrap_or(0);
     theme_picker.set_selected(initial_index as u32);
     apply_gui_theme(&theme_provider, &initial_theme);
-    *wordmark_surface.borrow_mut() = create_wordmark_surface(&initial_theme);
-    wordmark.queue_draw();
     theme_picker.connect_selected_notify({
         let provider = theme_provider.clone();
         let wordmark = wordmark.clone();
@@ -2854,7 +2852,7 @@ fn available_audio_sources() -> Vec<(String, String)> {
     choices.extend(
         crate::pipewire::parse_sinks(&String::from_utf8_lossy(&output.stdout))
             .into_iter()
-            .map(|sink| (format!("{} · {}", sink.name, sink.id), sink.id)),
+            .map(|sink| (format!("{} · {}", sink.name, sink.id), sink.name)),
     );
     choices
 }
@@ -3987,34 +3985,11 @@ fn check_pipewire(state: &Rc<std::cell::RefCell<AppState>>) {
     let sender = state.borrow().event_tx.clone();
     std::thread::spawn(move || {
         let result = (|| -> Result<String> {
-            let status = crate::pipewire::query_status()
-                .context("WirePlumber command wpctl was not found")?;
-            if !status.status.success() {
-                anyhow::bail!("wpctl could not query the PipeWire session");
-            }
-            let text = String::from_utf8_lossy(&status.stdout);
-            let sink = crate::pipewire::default_sink(&text);
-            let mut command = Command::new("pw-record");
-            command
-                .arg("--rate")
-                .arg(crate::audio::AUDIO_SAMPLE_RATE.to_string())
-                .arg("--channels")
-                .arg(crate::audio::AUDIO_CHANNELS.to_string())
-                .arg("--format")
-                .arg(crate::audio::AUDIO_PCM_FORMAT)
-                .arg("--raw")
-                .arg("--sample-count")
-                .arg(crate::audio::AUDIO_FRAME_SAMPLES.to_string());
-            if let Some(sink) = sink {
-                command.args(["--target", &sink]);
-            }
-            command.arg("-");
-            let recording = command
-                .output()
-                .context("PipeWire command pw-record was not found")?;
-            if !recording.status.success() || recording.stdout.is_empty() {
-                anyhow::bail!("PipeWire is running, but audio capture failed. Check your default output device.");
-            }
+            let config = crate::config::Config::load()?;
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(crate::audio::check_capture(&config.audio.source))?;
             Ok("PipeWire and audio capture are working.".to_string())
         })();
         let message = result.unwrap_or_else(|error| format!("PipeWire check failed: {error:#}"));

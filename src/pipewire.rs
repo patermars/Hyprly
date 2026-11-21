@@ -36,7 +36,10 @@ pub(crate) fn parse_sinks(status: &str) -> Vec<Sink> {
             continue;
         };
         let id = id.trim().trim_matches(|ch: char| !ch.is_ascii_digit());
-        let name = name.trim();
+        let name = name
+            .split_once(" [vol:")
+            .map_or(name, |(name, _)| name)
+            .trim();
         if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_digit()) || name.is_empty() {
             continue;
         }
@@ -51,16 +54,16 @@ pub(crate) fn parse_sinks(status: &str) -> Vec<Sink> {
     sinks
 }
 
-pub(crate) fn default_sink(status: &str) -> Option<String> {
+pub(crate) fn selected_sink(status: &str, source: &str) -> Option<Sink> {
+    // Older settings store wpctl graph IDs; pw-record accepts node names or serials.
     parse_sinks(status)
         .into_iter()
-        .find(|sink| sink.is_default)
-        .map(|sink| sink.id)
+        .find(|sink| sink.id == source || sink.name == source)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_sink, parse_sinks, Sink};
+    use super::{parse_sinks, selected_sink, Sink};
 
     const STATUS: &str = "\
 Audio\n\
@@ -77,21 +80,26 @@ Audio\n\
             vec![
                 Sink {
                     id: "42".into(),
-                    name: "Built-in Audio Analog Stereo [vol: 0.50]".into(),
+                    name: "Built-in Audio Analog Stereo".into(),
                     is_default: true,
                 },
                 Sink {
                     id: "57".into(),
-                    name: "USB Audio Device [vol: 0.75]".into(),
+                    name: "USB Audio Device".into(),
                     is_default: false,
                 },
             ]
         );
-        assert_eq!(default_sink(STATUS).as_deref(), Some("42"));
     }
 
     #[test]
-    fn returns_no_default_sink_when_the_status_has_none() {
-        assert_eq!(default_sink(" ├─ Sinks:\n │  42. Built-in Audio"), None);
+    fn selects_output_monitors_by_node_name_including_saved_device_ids() {
+        for source in ["57", "USB Audio Device"] {
+            assert_eq!(
+                selected_sink(STATUS, source).unwrap().name,
+                "USB Audio Device"
+            );
+        }
+        assert!(selected_sink(STATUS, "alsa_input.usb").is_none());
     }
 }
