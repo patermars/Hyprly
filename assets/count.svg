@@ -6,14 +6,14 @@
 <path d="M62 24V220H782" fill="none" stroke="#f4f4f5" stroke-width="2"/>
 <path d="M57 220.0H62" stroke="#f4f4f5" stroke-width="2"/>
 <text x="49" y="225.0" text-anchor="end" font-size="15">0</text>
-<path d="M57 122.0H62" stroke="#f4f4f5" stroke-width="2"/>
-<text x="49" y="127.0" text-anchor="end" font-size="15">3</text>
+<path d="M57 132.9H62" stroke="#f4f4f5" stroke-width="2"/>
+<text x="49" y="137.9" text-anchor="end" font-size="15">4</text>
 <path d="M57 24.0H62" stroke="#f4f4f5" stroke-width="2"/>
-<text x="49" y="29.0" text-anchor="end" font-size="15">6</text>
-<path d="M422.0 56.7" fill="none" stroke="#ff686f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<circle cx="422.0" cy="56.7" r="3" fill="#ff686f"/>
+<text x="49" y="29.0" text-anchor="end" font-size="15">9</text>
+<path d="M422.0 67.6" fill="none" stroke="#ff686f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="422.0" cy="67.6" r="3" fill="#ff686f"/>
 <text x="422.0" y="245" text-anchor="middle" font-size="15">Nov 2026</text>
 <text x="422" y="274" text-anchor="middle" font-size="14">Month</text>
 <text x="18" y="122" transform="rotate(-90 18 122)" text-anchor="middle" font-size="14">Active User Count</text>
-<text x="62" y="289" fill="#a1a1aa" font-size="10">Updated on Nov 22, 2026</text>
+<text x="62" y="289" fill="#a1a1aa" font-size="10">Updated on Nov 23, 2026</text>
 </g></svg>
